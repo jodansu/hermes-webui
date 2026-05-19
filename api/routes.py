@@ -1970,18 +1970,7 @@ def _merged_session_messages_for_display(session, cli_messages=None) -> list:
                 str(m.get("role") or ""),
                 str(m.get("content") or ""),
             )):
-                message_identity = msg.get("id") or msg.get("message_id")
-                if message_identity:
-                    key = ("message_id", str(message_identity))
-                else:
-                    key = (
-                        "legacy",
-                        str(msg.get("role") or ""),
-                        str(msg.get("content") or ""),
-                        str(msg.get("timestamp") or ""),
-                        str(msg.get("tool_call_id") or ""),
-                        str(msg.get("tool_name") or msg.get("name") or ""),
-                    )
+                key = _session_message_merge_key(msg)
                 if key in seen_message_keys:
                     continue
                 seen_message_keys.add(key)
@@ -2222,6 +2211,7 @@ from api.models import (
     get_cli_session_messages,
     get_state_db_session_messages,
     merge_session_messages_append_only,
+    _session_message_merge_key,
     ensure_cron_project,
     is_cron_session,
 )

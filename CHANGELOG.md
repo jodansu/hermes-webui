@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### Fixed
+- Deduplicate messaging/CLI session transcript rows when the sidecar and state store encode the same no-id message with equivalent timestamps in different formats, preventing repeated visible chat messages after session reconstruction.
 
 ## [v0.51.94] — 2026-05-19 — Release BR (stage-387 — 10-PR full sweep batch — Slice 4b runner adapter facade + folder zip download + partial recovery marker dedupe + browser api() client-side timeout + auto-compression card rotation finish + composer draft rollback fix + metadata count reconciliation + active-session refresh on external sidecar updates + indexed context metadata + gateway-queues approval peek)
 
