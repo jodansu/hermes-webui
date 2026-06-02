@@ -3,6 +3,14 @@
 
 ## [Unreleased]
 
+## [v0.51.217] — 2026-06-02 — Release GK (stage-p2f — decode and complete zh-Hant locale strings)
+
+### Changed
+- Decoded the `zh-Hant` (Traditional Chinese) locale block from `\u`-escaped sequences to literal Chinese text and backfilled missing keys so `zh-Hant` now has full coverage of the English key set. Makes future locale review readable and prevents newer UI keys from falling back to English for Traditional Chinese users. Locale-only — no runtime behavior change (#3414, @PeterDaveHello).
+
+### Fixed
+- Added the missing `provider_mismatch_warning` string to the French (`fr`) locale. It was absent entirely; the gap was masked by a stale duplicate of the same key in the `zh-Hant` block that #3414 removed, so all locales now carry the key.
+
 ## [v0.51.216] — 2026-06-02 — Release GJ (stage-p2e — fix consecutive-user-turn rejection on strict chat templates)
 
 ### Fixed
