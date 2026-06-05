@@ -109,7 +109,24 @@ function doSearch(){
     if(!d.results||!d.results.length){document.getElementById('sresults').innerHTML='<div id="sempty">未找到相关内容</div>';return}
     var html='';
     d.results.forEach(function(r){
-      html+='<div class="result"><div class="meta"><span class="source">'+esc(r.source)+'</span><span>块 '+r.chunk+'</span><span>相关度 '+(r.score*100).toFixed(0)+'%</span></div><div class="preview">'+esc(r.preview)+'</div></div>';
+      var wikiLink='';
+      var src=r.source||'';
+      // Detect wiki sources and generate wiki links
+      var wikiMap=[
+        {prefix:'Guozi-Wiki/', page:'/static/guozi-wiki.html?page='},
+        {prefix:'Yixue-Wiki/', page:'/static/yixue-wiki.html?page='},
+        {prefix:'AI-LLM-Wiki/', page:'/static/ai-llm-wiki.html?page='},
+        {prefix:'Hermes-Wiki/', page:'/static/wiki-v2.html?page='}
+      ];
+      for(var w=0;w<wikiMap.length;w++){
+        var idx=src.indexOf(wikiMap[w].prefix);
+        if(idx!==-1){
+          var rel=src.substring(idx+wikiMap[w].prefix.length).replace(/\.md$/,'');
+          wikiLink=' <a href="'+wikiMap[w].page+rel+'" target="_blank" style="color:#22c55e;font-size:11px;text-decoration:none">[Wiki]</a>';
+          break;
+        }
+      }
+      html+='<div class="result"><div class="meta"><span class="source">'+esc(r.source)+'</span>'+wikiLink+'<span>块 '+r.chunk+'</span><span>相关度 '+(r.score*100).toFixed(0)+'%</span></div><div class="preview">'+esc(r.preview)+'</div></div>';
     });
     document.getElementById('sresults').innerHTML=html;
   }).catch(function(){document.getElementById('sresults').innerHTML='<div id="sempty">搜索失败</div>'});

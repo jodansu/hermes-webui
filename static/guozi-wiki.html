@@ -170,11 +170,17 @@ function loadPage(pageName) {
 // Init
 loadTOC();
 
-// Load last page or index
-var lastPage=null;
-try{lastPage=localStorage.getItem('wiki-last-page-8789')}catch(e){}
-if (lastPage) loadPage(lastPage);
-else loadPage('index');
+// Load from URL param or last saved page or index
+var qp2=new URLSearchParams(location.search);
+var paramPage=qp2.get('page');
+if(paramPage){
+  loadPage(paramPage);
+} else {
+  var lastPage=null;
+  try{lastPage=localStorage.getItem('wiki-last-page-8789')}catch(e){}
+  if (lastPage) loadPage(lastPage);
+  else loadPage('index');
+}
 </script>
 </body>
 </html>
