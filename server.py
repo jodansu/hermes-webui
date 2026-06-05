@@ -135,7 +135,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 _CSP_CONNECT_BASE = (
-    "'self' http://127.0.0.1:* http://localhost:* "
+    "'self' http://127.0.0.1:* http://localhost:* http://192.168.40.5:* "
     "ws://127.0.0.1:* ws://localhost:*"
 )
 _CSP_EXTRA_CONNECT_RE = re.compile(
