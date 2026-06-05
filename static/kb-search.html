@@ -205,9 +205,9 @@ function renderHistoryPage(p){
   }
   var html='<div style="font-size:13px;color:#64748b;margin-bottom:12px">共 '+total+' 条，第 '+(start+1)+'-'+end+' 条</div>';
   page.forEach(function(h,i){
-    html+='<div class="history-item"><span class="icon">📄</span><span class="name" title="'+esc(h.filename)+'">'+(start+i+1)+'. '+esc(h.filename)+'</span><span class="chunks">'+(h.chunks||0)+' 块</span><span class="time">'+h.time+'</span>'
-      +'<button class="wiki-btn" onclick="importToWiki(\''+esc(h.filename)+'\')" title="导入到对应Wiki">+Wiki</button>'
-      +'</div>';
+    var wikiBadge='';
+    if(h.wiki) wikiBadge=' <span style="background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600">📗 '+h.wiki+'</span>';
+    html+='<div class="history-item"><span class="icon">📄</span><span class="name" title="'+esc(h.filename)+'">'+(start+i+1)+'. '+esc(h.filename)+'</span>'+wikiBadge+'<span class="chunks">'+(h.chunks||0)+' 块</span><span class="time">'+h.time+'</span></div>';
   });
   document.getElementById('hresults').innerHTML=html;
 
@@ -225,14 +225,7 @@ function renderHistoryPage(p){
   document.getElementById('pagination').innerHTML=phtml;
 }
 
-// Wiki import
-function importToWiki(filename){
-  var wiki=prompt('选择导入目标Wiki:\n1 = 国资Wiki (8789)\n2 = 医学Wiki (8790)\n3 = AI大模型Wiki (8791)\n4 = AI知识库 (8788)','1');
-  if(!wiki)return;
-  var wikis={'1':{name:'国资',port:'8789'},'2':{name:'医学',port:'8790'},'3':{name:'AI大模型',port:'8791'},'4':{name:'AI知识库',port:'8788'}};
-  var w=wikis[wiki];if(!w){alert('无效选择');return}
-  alert('请手动操作：\n1. 从上传页面重新上传文件 "'+filename+'"\n2. 然后在终端执行：\n   cp 文件路径 ~/'+w.name.replace('国资','Guozi').replace('医学','Yixue').replace('AI大模型','AI-LLM').replace('AI知识库','Hermes')+'-Wiki/raw/articles/\'\n   或通过侧栏对应Wiki页面手动归档');
-}
+// Wiki import removed - use wiki page upload instead
 
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
