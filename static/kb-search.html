@@ -149,7 +149,24 @@ function doUpload(files){
   })(files[i])}
   function start(){
     var msgs=[];
-    if(skipped.length)msgs.push('⚠️ 跳过重复: '+skipped.join(', '));
+    if(skipped.length){
+      msgs.push('⚠️ 检测到 '+skipped.length+' 个重复文件');
+      // Build filenames for dialog
+      var dupNames=skipped.join('\n');
+      var action=confirm('以下文件已存在，是否覆盖?\n\n'+dupNames+'\n\n点"确定"覆盖，点"取消"跳过');
+      if(action){
+        // User chose overwrite - add them to toUpload
+        skipped.forEach(function(name){
+          for(var j=0;j<files.length;j++){
+            if(files[j].name===name){toUpload.push(files[j]);break}
+          }
+        });
+        skipped=[];
+        msgs=[];
+      } else {
+        msgs=['⚠️ 已跳过 '+skipped.length+' 个重复文件'];
+      }
+    }
     if(!toUpload.length){msgs.push('所有文件已存在，无需导入');status.innerHTML=msgs.join('<br>');return}
     msgs.push('共 '+toUpload.length+' 个文件待导入...');
     status.innerHTML=msgs.join('<br>');uploadOne(0);
