@@ -66,13 +66,18 @@ function render(data){
   var zoom=d3.zoom().scaleExtent([.2,4]).on('zoom',e=>g.attr('transform',e.transform));
   svg.call(zoom);
 
+  // Filter broken edges
+  var nodeIds=new Set(data.nodes.map(n=>n.id));
+  var validEdges=data.edges.filter(e=>nodeIds.has(e.source)&&nodeIds.has(e.target));
+  var broken=data.edges.length-validEdges.length;
+  document.getElementById('stats').textContent=data.nodes.length+'节点/'+validEdges.length+'边'+(broken?' (过滤'+broken+'断裂边)':'');
   var sim=d3.forceSimulation(data.nodes)
-    .force('link',d3.forceLink(data.edges).id(d=>d.id).distance(80))
+    .force('link',d3.forceLink(validEdges).id(d=>d.id).distance(80))
     .force('charge',d3.forceManyBody().strength(-200))
     .force('center',d3.forceCenter(W/2,H/2))
     .force('collide',d3.forceCollide().radius(20));
 
-  var link=g.selectAll('.edge').data(data.edges).join('line').attr('class','edge');
+  var link=g.selectAll('.edge').data(validEdges).join('line').attr('class','edge');
   var node=g.selectAll('.node').data(data.nodes).join('g').attr('class','node')
     .call(d3.drag().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.3).restart();d.fx=d.x;d.fy=d.y})
       .on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y})
