@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 知识库</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#0a0e1a;color:#c8cdd8;display:flex;height:100vh;overflow:hidden}
+#sidebar{width:260px;min-width:260px;background:#0d1120;border-right:1px solid #1e293b;overflow-y:auto;padding:16px 0;flex-shrink:0}
+#sidebar h2{font-size:14px;font-weight:700;color:#e2e8f0;padding:8px 18px;margin:0;letter-spacing:1px}
+#sidebar .section{margin-bottom:12px}
+#sidebar .section-title{font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;padding:6px 18px;margin-top:8px}
+#sidebar a{display:block;font-size:13px;color:#94a3b8;text-decoration:none;padding:5px 18px 5px 24px;border-left:2px solid transparent;transition:all .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sidebar a:hover{color:#e2e8f0;background:#1a2035;border-left-color:#3b82f6}
+#sidebar a.active{color:#60a5fa;background:#1a2440;border-left-color:#3b82f6;font-weight:600}
+#main{flex:1;overflow-y:auto;padding:32px 40px;max-width:820px}
+#main h1{font-size:1.5em;color:#e2e8f0;border-bottom:1px solid #1e293b;padding-bottom:10px;margin-bottom:16px}
+#main h2{font-size:1.2em;color:#e2e8f0;margin-top:28px;margin-bottom:10px}
+#main h3{font-size:1.05em;color:#94a3b8;margin-top:20px;margin-bottom:8px}
+#main p{line-height:1.8;margin-bottom:12px;font-size:15px}
+#main a{color:#60a5fa;text-decoration:none}
+#main table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px}
+#main th,#main td{border:1px solid #334155;padding:8px 12px;text-align:left}
+#main th{background:#1e293b;color:#e2e8f0;font-weight:600}
+#main tr:nth-child(even) td{background:#0f1525}
+#main code{background:#1e293b;padding:2px 6px;border-radius:4px;font-size:.9em}
+#main pre{background:#1e293b;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5}
+#main blockquote{border-left:3px solid #3b82f6;padding:8px 16px;color:#94a3b8;margin:16px 0;background:#0f1525}
+#main .frontmatter{background:#0f1525;border-radius:8px;padding:16px;margin-bottom:20px;font-size:13px}
+#main .frontmatter .tag{display:inline-block;background:#1e293b;color:#60a5fa;padding:2px 8px;border-radius:4px;margin:2px 4px 2px 0;font-size:11px}
+.wiki-link{color:#60a5fa;cursor:pointer;text-decoration:underline;text-decoration-style:dotted}
+.wiki-link:hover{color:#93c5fd}
+#loading,#error{text-align:center;padding:60px;color:#64748b}
+#error{color:#ef4444}
+@media(max-width:700px){#sidebar{display:none}#main{padding:20px}}
+</style>
+</head>
+<body>
+<div id="sidebar">
+<h2 id="wikiTitle">AI 知识库</h2>
+<div id="toc"><div id="loading">加载目录...</div></div>
+</div>
+<div id="main"><div id="loading">选择左侧页面开始浏览</div></div>
+
+<script src="marked.min.js"></script>
+<script>
+var WIKI_BASE='http://192.168.40.5:8788';
+var WIKI_NAME='AI 知识库';
+var currentPage='';
+var pageCache={};
+var tocLoaded=false;
+
+marked.setOptions({breaks:true,gfm:true});
+
+function decodeHTMLEntities(text) {
+  var el = document.createElement('textarea');
+  el.innerHTML = text;
+  return el.value;
+}
+
+function processWikilinks(html) {
+  return html.replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, function(m, target, label) {
+    var display = (label || target).trim();
+    var t = target.trim();
+    return '<span class="wiki-link" onclick="loadPage(\'' + t.replace(/'/g, "\\'") + '\')">' + display + '</span>';
+  });
+}
+
+function loadTOC() {
+  if (tocLoaded) return;
+  fetch(WIKI_BASE+'/index.md').then(function(r){return r.text()}).then(function(md){
+    var lines=md.split('\n');
+    var toc=document.getElementById('toc');
+    toc.innerHTML='';
+    var currentSection=null;
+    var hasContent=false;
+    lines.forEach(function(line){
+      if (line.match(/^## (.+)/)) {
+        var title=line.replace(/^## /,'');
+        var div=document.createElement('div');
+        div.className='section';
+        div.innerHTML='<div class="section-title">'+title+'</div>';
+        toc.appendChild(div);
+        currentSection=div;
+      } else if (line.match(/^- \[\[(.+)\]\]/)) {
+        var m=line.match(/^- \[\[([^\]]+)\]\]/);
+        if (m && currentSection) {
+          var a=document.createElement('a');
+          a.href='javascript:void(0)';
+          a.textContent=m[1];
+          a.onclick=function(p){return function(){loadPage(p)}}(m[1]);
+          currentSection.appendChild(a);
+          hasContent=true;
+        }
+      } else if (line.match(/^- \[\[(.+?)\]\] — (.+)/)) {
+        var m=line.match(/^- \[\[([^\]]+?)\]\] — (.+)/);
+        if (m && currentSection) {
+          var a=document.createElement('a');
+          a.href='javascript:void(0)';
+          a.textContent=m[1];
+          a.title=m[2];
+          a.onclick=function(p){return function(){loadPage(p)}}(m[1]);
+          currentSection.appendChild(a);
+          hasContent=true;
+        }
+      }
+    });
+    if (!hasContent) toc.innerHTML='<div style="padding:16px;color:#64748b;font-size:13px">暂无页面</div>';
+    tocLoaded=true;
+  }).catch(function(e){
+    document.getElementById('toc').innerHTML='<div style="padding:16px;color:#ef4444;font-size:13px">加载目录失败</div>';
+  });
+}
+
+function loadPage(pageName) {
+  if (currentPage===pageName) return;
+  currentPage=pageName;
+  var main=document.getElementById('main');
+  main.innerHTML='<div id="loading">加载中...</div>';
+
+  var dirs=['concepts/','entities/','comparisons/','queries/',''];
+  function tryFetch(idx) {
+    if (idx>=dirs.length) {
+      main.innerHTML='<div id="error">页面未找到: '+pageName+'</div>';
+      return;
+    }
+    var url=WIKI_BASE+'/'+dirs[idx]+pageName+'.md';
+    fetch(url).then(function(r){if(!r.ok)throw Error('404');return r.text()}).then(function(md){
+      var title=pageName;var frontmatter='';
+      if (md.startsWith('---')) {
+        var end=md.indexOf('---',3);
+        if (end!==-1) {
+          frontmatter=md.substring(3,end).trim();
+          md=md.substring(end+3).trim();
+          // Parse title
+          var titleMatch=frontmatter.match(/^title:\s*(.+)$/m);
+          if (titleMatch) title=titleMatch[1].replace(/['"]/g,'');
+          // Parse tags
+          var tagsMatch=frontmatter.match(/^tags:\s*(.+)$/m);
+          if (tagsMatch) {
+            var tags=tagsMatch[1].replace(/[\[\]'"]/g,'').split(/[,\s]+/).filter(Boolean).slice(0,6);
+            frontmatter='<div class="frontmatter">'+tags.map(function(t){return '<span class="tag">#'+t+'</span>'}).join(' ')+'</div>';
+          } else frontmatter='';
+        }
+      }
+      var html=marked.parse(md);
+      html=processWikilinks(html);
+      document.title=title+' - '+WIKI_NAME;
+      main.innerHTML=frontmatter+'<h1>'+title+'</h1>'+html;
+
+      // Highlight active nav
+      var links=document.querySelectorAll('#sidebar a');
+      links.forEach(function(a){a.classList.remove('active')});
+      links.forEach(function(a){if(a.textContent.trim()===pageName)a.classList.add('active')});
+
+      // Scroll to top
+      main.scrollTop=0;
+
+      // Cache
+      pageCache[pageName]={title:title,html:main.innerHTML};
+
+      // Store last page
+      try{localStorage.setItem('wiki-last-page-8788',pageName)}catch(e){}
+    }).catch(function(){tryFetch(idx+1)});
+  }
+  tryFetch(0);
+}
+
+// Init
+loadTOC();
+
+// Load last page or index
+var lastPage=null;
+try{lastPage=localStorage.getItem('wiki-last-page-8788')}catch(e){}
+if (lastPage) loadPage(lastPage);
+  else loadPage('index');
+</script>
+</body>
+</html>

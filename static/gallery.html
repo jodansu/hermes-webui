@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
+<title>国资穿透式监管大模型Agent平台</title>
+<meta name="description" content="国资穿透式监管大模型Agent平台 — 15大核心Agent驾驶舱全景展示">
+<meta property="og:title" content="国资穿透式监管大模型Agent平台">
+<meta property="og:description" content="15大核心Agent驾驶舱：资金穿透、围标识别、虚假贸易、风险预警…">
+<meta property="og:image" content="gallery/国资穿透式监管总驾驶舱.jpg">
+<meta property="og:type" content="website">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--card:#111827;--text:#c8cdd8;--accent:#3b82f6;
+  --title-size:clamp(1.2rem,3vw,1.8rem);--label-size:clamp(0.7rem,1.5vw,0.85rem)
+}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;min-height:100vh;overflow-x:hidden}
+.header{text-align:center;padding:clamp(24px,5vh,48px) 16px 24px}
+.header h1{font-size:var(--title-size);font-weight:700;color:#e2e8f0;letter-spacing:0.5px}
+.header p{font-size:clamp(0.75rem,1.5vw,0.9rem);color:#64748b;margin-top:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;padding:0 clamp(12px,3vw,32px) 24px;max-width:1400px;margin:0 auto}
+.card{background:var(--card);border-radius:10px;overflow:hidden;cursor:pointer;transition:transform .2s,border-color .2s;border:1px solid #1e293b;display:flex;flex-direction:column}
+.card:hover{transform:translateY(-2px);border-color:var(--accent)}
+.card img{width:100%;height:160px;object-fit:cover;display:block;flex-shrink:0}
+.card .label{padding:10px 12px;font-size:var(--label-size);color:#94a3b8;line-height:1.4;flex:1;display:flex;align-items:center}
+
+/* Lightbox */
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:9999;display:none;flex-direction:column;align-items:center;justify-content:center}
+.lightbox.active{display:flex}
+.lightbox img{max-width:95vw;max-height:78vh;object-fit:contain;border-radius:6px;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+.lb-close{position:absolute;top:16px;right:20px;font-size:32px;color:#fff;cursor:pointer;z-index:10;width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);border-radius:50%;border:none;line-height:1}
+.lb-close:hover{background:rgba(255,255,255,.2)}
+.lb-nav{position:absolute;top:50%;transform:translateY(-50%);font-size:40px;color:#fff;cursor:pointer;background:rgba(255,255,255,.08);border:none;border-radius:50%;width:50px;height:50px;display:flex;align-items:center;justify-content:center;z-index:10;transition:background .2s}
+.lb-nav:hover{background:rgba(255,255,255,.2)}
+.lb-prev{left:clamp(8px,3vw,24px)}
+.lb-next{right:clamp(8px,3vw,24px)}
+.lb-title{position:absolute;bottom:80px;left:50%;transform:translateX(-50%);color:#94a3b8;font-size:clamp(0.7rem,1.2vw,0.85rem);text-align:center;max-width:90vw;pointer-events:none}
+.lb-counter{position:absolute;top:20px;left:50%;transform:translateX(-50%);color:#64748b;font-size:0.8rem}
+/* Thumbnail strip */
+.strip{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;overflow-x:auto;max-width:95vw;padding:0 8px;scroll-behavior:smooth;-webkit-overflow-scrolling:touch}
+.strip::-webkit-scrollbar{height:3px}
+.strip::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+.strip img{width:56px;height:36px;object-fit:cover;border-radius:4px;cursor:pointer;opacity:.5;border:2px solid transparent;transition:all .2s;flex-shrink:0}
+.strip img.active{opacity:1;border-color:var(--accent)}
+.strip img:hover{opacity:.8}
+/* Footer */
+.footer{text-align:center;padding:16px;color:#475569;font-size:0.7rem}
+/* Mobile */
+@media(max-width:640px){
+  .grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .card img{height:110px}
+  .lb-nav{font-size:28px;width:38px;height:38px}
+  .strip img{width:40px;height:28px}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>国资穿透式监管大模型Agent平台</h1>
+  <p>15 大核心 Agent 驾驶舱全景展示</p>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<div class="lightbox" id="lb">
+  <button class="lb-close" onclick="closeLB()" aria-label="关闭">×</button>
+  <button class="lb-nav lb-prev" onclick="nav(-1)" aria-label="上一张">‹</button>
+  <button class="lb-nav lb-next" onclick="nav(1)" aria-label="下一张">›</button>
+  <span class="lb-counter" id="lbCounter"></span>
+  <img id="lbImg" src="" alt="">
+  <span class="lb-title" id="lbTitle"></span>
+  <div class="strip" id="strip"></div>
+</div>
+
+<div class="footer">国资穿透式监管大模型Agent平台 · 苏哲HermesAgent</div>
+
+<script>
+const images = [
+  {file:"gallery/zong-jiashicang.jpg",title:"国资穿透式监管总驾驶舱",label:"总驾驶舱 · 四全穿透全景"},
+  {file:"gallery/zijin-chuantou.jpg",title:"资金穿透与异常流动检测Agent",label:"资金穿透 · 银企直联+流计算实时监控"},
+  {file:"gallery/touzi-quanshengming.jpg",title:"投资全生命周期智能监管Agent",label:"投资穿透 · 立项/建设/运营/退出全周期"},
+  {file:"gallery/weibiao-shibie.jpg",title:"围标串标识别Agent",label:"围标识别 · IP/资质/关系图谱多维交叉"},
+  {file:"gallery/xujia-maoyi-duoagent.jpg",title:"虚假贸易识别Agent·多Agent协同",label:"1个主Agent+3个子Agent协同作战"},
+  {file:"gallery/xujia-maoyi-tezheng.jpg",title:"虚假贸易识别Agent·特征引擎",label:"18项贸易异常特征分析引擎"},
+  {file:"gallery/xujia-maoyi-taizhang.jpg",title:"虚假贸易识别Agent·识别台账",label:"虚假贸易识别结果台账"},
+  {file:"gallery/guanlian-jiaoyi.jpg",title:"关联交易识别Agent",label:"关联交易 · 利益输送/转移定价穿透识别"},
+  {file:"gallery/zichan-dixiao.jpg",title:"资产低效闲置与异常处置Agent",label:"资产穿透 · 低效闲置智能识别+异常处置"},
+  {file:"gallery/fengxian-yujing.jpg",title:"风险预警Agent·全景驾驶舱",label:"风险预警 · 多维风险指标实时聚合"},
+  {file:"gallery/fengxian-taizhang.jpg",title:"风险预警Agent·决策台账",label:"风险预警决策台账 · 分级处置+闭环跟踪"},
+  {file:"gallery/qiye-huaxiang.jpg",title:"企业全景画像驾驶舱",label:"企业画像 · 财务/经营/合规多维标签"},
+  {file:"gallery/jingying-guanli.jpg",title:"经营管理驾驶舱",label:"经营穿透 · 收入/成本/利润动态监控"},
+  {file:"gallery/jixiao-duibiao.jpg",title:"经营绩效对标驾驶舱",label:"绩效对标 · 同行业/同区域/同规模横向对比"},
+  {file:"gallery/shixian-fencang.jpg",title:"市县监管分舱",label:"分级监管 · 市县穿透+分级预警"}
+];
+
+let curIdx=0;
+
+function render(){
+  var g=document.getElementById("grid");
+  images.forEach(function(img,i){
+    var c=document.createElement("div");
+    c.className="card";
+    c.innerHTML='<img src="'+img.file+'" alt="'+img.title+'" loading="lazy"><div class="label">'+img.label+'</div>';
+    c.onclick=function(){openLB(i)};
+    g.appendChild(c);
+  });
+  // Thumbnail strip
+  var s=document.getElementById("strip");
+  images.forEach(function(img,i){
+    var t=document.createElement("img");
+    t.src=img.file;t.alt=img.title;t.title=img.title;
+    t.onclick=function(e){e.stopPropagation();openLB(i)};
+    t.dataset.idx=i;
+    s.appendChild(t);
+  });
+}
+
+function openLB(i){
+  curIdx=i;
+  document.getElementById("lb").classList.add("active");
+  document.body.style.overflow="hidden";
+  updateLB();
+}
+
+function closeLB(){
+  document.getElementById("lb").classList.remove("active");
+  document.body.style.overflow="";
+}
+
+function nav(dir){
+  curIdx=(curIdx+dir+images.length)%images.length;
+  updateLB();
+}
+
+function updateLB(){
+  var img=images[curIdx];
+  document.getElementById("lbImg").src=img.file;
+  document.getElementById("lbTitle").textContent=img.label;
+  document.getElementById("lbCounter").textContent=(curIdx+1)+" / "+images.length;
+  var thumbs=document.querySelectorAll("#strip img");
+  thumbs.forEach(function(t,i){t.classList.toggle("active",i===curIdx)});
+  // Scroll thumb into view
+  var active=document.querySelector("#strip img.active");
+  if(active)active.scrollIntoView({behavior:"smooth",block:"nearest",inline:"center"});
+}
+
+document.addEventListener("keydown",function(e){
+  if(!document.getElementById("lb").classList.contains("active"))return;
+  if(e.key==="Escape")closeLB();
+  if(e.key==="ArrowLeft")nav(-1);
+  if(e.key==="ArrowRight")nav(1);
+});
+
+// Touch swipe
+var touchX=0;
+document.getElementById("lb").addEventListener("touchstart",function(e){touchX=e.touches[0].clientX});
+document.getElementById("lb").addEventListener("touchend",function(e){
+  var dx=e.changedTouches[0].clientX-touchX;
+  if(Math.abs(dx)>50){nav(dx>0?-1:1)}
+});
+
+render();
+</script>
+</body>
+</html>
