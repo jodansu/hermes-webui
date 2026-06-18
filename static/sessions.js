@@ -3932,7 +3932,7 @@ function _installSidebarSseFocusHook(){
 
 function _closeSessionEventsSSE(){
   if(_sessionEventsSSE){
-    _sessionEventsSSE.close();
+    try{if(_sessionEventsSSE.readyState!==2)_sessionEventsSSE.close();}catch(_){ }
     _sessionEventsSSE = null;
   }
 }
@@ -4143,7 +4143,7 @@ function startGatewaySSE(){
     _gatewaySSE.onerror = () => {
       if(typeof recordClientSSEError==='function') recordClientSSEError('gateway-sessions',{ready_state:_gatewaySSE?_gatewaySSE.readyState:null,reason:'gateway EventSource.onerror'});
       if(_gatewaySSE){
-        _gatewaySSE.close();
+        try{if(_gatewaySSE.readyState!==2)_gatewaySSE.close();}catch(_){ }
         _gatewaySSE = null;
       }
       void probeGatewaySSEStatus();
@@ -4155,7 +4155,7 @@ function startGatewaySSE(){
 
 function stopGatewaySSE(){
   if(_gatewaySSE){
-    _gatewaySSE.close();
+    try{if(_gatewaySSE.readyState!==2)_gatewaySSE.close();}catch(_){ }
     _gatewaySSE = null;
   }
   stopGatewayPollFallback();
