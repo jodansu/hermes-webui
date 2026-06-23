@@ -453,6 +453,13 @@ def _all_profiles_enabled(parsed_url) -> bool:
     return _all_profiles_query_flag(parsed_url) and not _is_isolated_profile_mode()
 
 
+def _query_flag(parsed_url, name: str) -> bool:
+    """Return True for a truthy query flag value."""
+    qs = parse_qs(parsed_url.query)
+    raw = qs.get(name, [''])[0].strip().lower()
+    return raw in ('1', 'true', 'yes', 'on')
+
+
 def _session_visible_to_active_profile(session_profile, handler=None) -> bool:
     """Return whether a detail-load session belongs to the active profile.
 
@@ -1589,6 +1596,7 @@ def _session_list_cache_key(
     show_cli_sessions: bool,
     show_previous_messaging_sessions: bool,
     show_cron_sessions: bool,
+    include_archived: bool = False,
     source_filter: str | None = None,
 ) -> tuple:
     return (
@@ -1597,6 +1605,7 @@ def _session_list_cache_key(
         bool(show_cli_sessions),
         bool(show_previous_messaging_sessions),
         bool(show_cron_sessions),
+        bool(include_archived),
         source_filter,
     )
 
@@ -1690,10 +1699,80 @@ def _session_list_cache_path_stamp(path: Path | None) -> tuple[int, int]:
         return (0, 0)
 
 
+def _session_list_cache_streaming_freeze_marker():
+    """Return a hold-down marker while any session is actively streaming, else None.
+
+    During an active chat turn the gateway/CLI writes message rows to state.db
+    continuously. Each write advances the WAL stat and the content fingerprint
+    (``MAX(rowid)`` of ``messages``) that ``_session_list_cache_source_stamp``
+    folds in, so the source stamp changes on essentially every ``/api/sessions``
+    poll — popping the cache and forcing a full ``all_sessions()`` rebuild
+    mid-stream. That rebuild then contends for the global ``LOCK`` the streaming
+    worker holds while writing, which is what drags token output down to
+    ~2 tok/s and produces the multi-second (and occasional ~15s) ``/api/sessions``
+    latencies in issue #4672.
+
+    The marker is keyed only on the *set* of active stream ids, not on any
+    per-write state, so:
+      * while the same turn(s) stream, the marker is constant → the cache holds
+        steady and rebuilds are bounded to the TTL cadence (one per
+        ``_SESSIONS_CACHE_TTL_SECONDS``) instead of one per poll;
+      * the instant a stream starts or stops, the active set changes → the
+        marker changes → the cache re-validates and the just-finished turn's
+        final title/message_count is picked up immediately.
+
+    Structural sidebar mutations (new/deleted/renamed/imported sessions,
+    attention, cron completion) do NOT rely on this stamp — they invalidate the
+    cache directly through the ``publish_session_list_changed`` listener — so the
+    only thing that can lag under the hold-down is a streaming session's own
+    title/message_count, which already tolerates a <=TTL refresh delay.
+    """
+    try:
+        active = _active_stream_ids()
+    except Exception:
+        return None
+    if not active:
+        return None
+    try:
+        return ("streaming", tuple(sorted(str(x) for x in active)))
+    except Exception:
+        return ("streaming",)
+
+
 def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], tuple[int, int], object, int]:
     _cache_profile, _cache_all_profiles, cache_show_cli_sessions, *_rest = key
     if not cache_show_cli_sessions:
         return ((0, 0), (0, 0), (0, 0), (0, 0), (0, 0), None, 0)
+    try:
+        settings_file = SETTINGS_FILE
+    except Exception:
+        settings_file = None
+    try:
+        from api.config import _SETTINGS_WRITE_VERSION
+        swv = _SETTINGS_WRITE_VERSION
+    except Exception:
+        swv = 0
+    # Streaming hold-down (#4672): while a turn is in flight, collapse the
+    # volatile state.db-derived components (db/WAL stat, gateway metadata, index
+    # stat, content fingerprint) to a marker that only changes when a stream
+    # starts or stops. This stops per-token message writes from busting the
+    # cache and triggering LOCK-contending rebuilds on every poll. The TTL still
+    # forces a periodic rebuild so the streaming session's own count/title stay
+    # fresh within the TTL window, and settings_file + the settings write
+    # version stay live so user-initiated sidebar/setting toggles invalidate
+    # immediately. Skipping the fingerprint's SQLite connect here also makes the
+    # streaming-path stamp strictly cheaper than the idle path.
+    streaming_marker = _session_list_cache_streaming_freeze_marker()
+    if streaming_marker is not None:
+        return (
+            streaming_marker,
+            streaming_marker,
+            streaming_marker,
+            streaming_marker,
+            _session_list_cache_path_stamp(settings_file),
+            streaming_marker,
+            swv,
+        )
     try:
         state_db_path = Path(_active_state_db_path())
     except Exception:
@@ -1710,15 +1789,6 @@ def _session_list_cache_source_stamp(key: tuple) -> tuple[tuple[int, int], tuple
         session_index_path = SESSION_DIR / "_index.json"
     except Exception:
         session_index_path = None
-    try:
-        settings_file = SETTINGS_FILE
-    except Exception:
-        settings_file = None
-    try:
-        from api.config import _SETTINGS_WRITE_VERSION
-        swv = _SETTINGS_WRITE_VERSION
-    except Exception:
-        swv = 0
     return (
         _session_list_cache_path_stamp(state_db_path),
         _session_list_cache_path_stamp(state_db_wal_path),
@@ -1774,10 +1844,57 @@ def _session_list_cache_overlay_runtime_rows(rows: list[dict]) -> list[dict]:
             item["has_pending_user_message"] = bool(
                 getattr(live, "pending_user_message", None)
             )
+            for key in ("pending_started_at", "updated_at", "last_message_at"):
+                current = _session_list_row_numeric_value(item.get(key))
+                raw_live_value = getattr(live, key, None)
+                live_value = _session_list_row_numeric_value(raw_live_value)
+                if live_value > current:
+                    item[key] = raw_live_value
         stream_id = item.get("active_stream_id")
         item["is_streaming"] = bool(stream_id and stream_id in active_stream_ids)
         overlaid.append(item)
+    overlaid.sort(key=_session_list_runtime_sort_key, reverse=True)
     return overlaid
+
+
+def _session_list_row_numeric_value(value) -> float:
+    try:
+        numeric = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return numeric if numeric > 0 else 0.0
+
+
+def _session_list_row_timestamp(row: dict) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    # Match the frontend `_sessionSortTimestampMs` semantics exactly (#4688 review):
+    # the idle base is the FIRST truthy of last_message_at -> updated_at -> created_at
+    # (NOT a flat max over all of them — a renamed/metadata-touched idle chat bumps
+    # updated_at without new messages and must not outrank a newer chatted session),
+    # then pending_started_at is overlaid only as the runtime promotion.
+    base = 0.0
+    for key in ("last_message_at", "updated_at", "created_at"):
+        base = _session_list_row_numeric_value(row.get(key))
+        if base > 0:
+            break
+    pending = _session_list_row_numeric_value(row.get("pending_started_at"))
+    return max(base, pending)
+
+
+def _session_list_row_is_runtime_active(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if row.get("is_streaming"):
+        return True
+    return bool(row.get("active_stream_id") and row.get("has_pending_user_message"))
+
+
+def _session_list_runtime_sort_key(row: dict) -> tuple[int, float]:
+    return (
+        1 if _session_list_row_is_runtime_active(row) else 0,
+        _session_list_row_timestamp(row),
+    )
 
 
 def _session_list_cache_claim_rebuild(key: tuple) -> tuple[threading.Event, bool]:
@@ -1806,17 +1923,32 @@ def _build_session_list_cache_payload(
     show_cli_sessions: bool,
     show_previous_messaging_sessions: bool,
     show_cron_sessions: bool,
+    include_archived: bool = False,
     source_filter: str | None = None,
     diag=None,
 ) -> dict:
     diag_stage = diag.stage if diag is not None else lambda *_a, **_k: None
 
+    def _all_sessions_for_sidebar():
+        try:
+            return all_sessions(diag=diag, include_lineage_metadata=False)
+        except TypeError as exc:
+            message = str(exc)
+            if (
+                "unexpected keyword argument" not in message
+                or "include_lineage_metadata" not in message
+            ):
+                raise
+            # Focused tests and third-party callers sometimes monkeypatch
+            # routes.all_sessions with the historical diag-only signature.
+            return all_sessions(diag=diag)
+
     diag_stage("all_sessions")
-    webui_sessions = all_sessions(diag=diag)
+    webui_sessions = _all_sessions_for_sidebar()
     diag_stage("reconcile_stale_stream_state")
     if _reconcile_stale_stream_state_for_session_rows(webui_sessions):
         diag_stage("all_sessions_after_stale_stream_reconcile")
-        webui_sessions = all_sessions(diag=diag)
+        webui_sessions = _all_sessions_for_sidebar()
     diag_stage("normalize_cli_rows")
     show_cli_sessions = bool(show_cli_sessions)
     show_previous_messaging_sessions = bool(show_previous_messaging_sessions)
@@ -1827,12 +1959,12 @@ def _build_session_list_cache_payload(
         cli = get_cli_sessions(source_filter=source_filter, all_profiles=all_profiles)
         diag_stage("merge_cli_sessions")
         cli_by_id = {s["session_id"]: s for s in cli}
-        # #3238: reconcile orphaned imported-CLI sidecars. When a CLI
-        # session was clicked in WebUI it gets a WebUI-owned sidecar that
-        # all_sessions() returns independently of state.db. If the user
-        # later deletes the backing CLI session from the command line,
-        # the sidecar is never pruned and the stale row lingers in the
-        # sidebar forever (there is no WebUI delete affordance for it).
+        # #3238/#4591: reconcile orphaned imported sidecars. When a CLI or
+        # API-server session is clicked in WebUI it gets a WebUI-owned sidecar
+        # that all_sessions() returns independently of state.db. If the user
+        # later deletes the backing agent session outside WebUI, the sidecar is
+        # never pruned and the stale row lingers in the sidebar forever (there
+        # is no WebUI delete affordance for read-only imported rows).
         # Drop rows whose backing agent row is genuinely gone. We probe
         # state.db directly (agent_session_rows_existing) rather than trust
         # cli_by_id absence, because get_cli_sessions() caps at
@@ -1846,7 +1978,7 @@ def _build_session_list_cache_payload(
             _sid = s.get("session_id")
             if (
                 _sid
-                and is_cli_session_row(s)
+                and (is_cli_session_row(s) or _is_api_server_sidecar_row(s))
                 and not _session_source_is_webui(s)
                 and _sid not in cli_by_id
             ):
@@ -1879,11 +2011,11 @@ def _build_session_list_cache_payload(
                         prune_session_from_index(_sid)
                     except Exception:
                         logger.debug(
-                            "Failed to prune orphaned CLI sidecar %s",
+                            "Failed to prune orphaned agent sidecar %s",
                             _sid,
                             exc_info=True,
                         )
-                    diag_stage("prune_orphaned_cli_sidecar")
+                    diag_stage("prune_orphaned_agent_sidecar")
                     continue
                 _kept_after_orphan_prune.append(s)
         webui_sessions = _kept_after_orphan_prune
@@ -1943,19 +2075,42 @@ def _build_session_list_cache_payload(
         scoped = [s for s in merged if _profiles_match(s.get("profile"), active_profile)]
         other_profile_count = 0 if _is_isolated_profile_mode() else len(merged) - len(scoped)
     diag_stage("messaging_dedupe")
-    scoped = _keep_latest_messaging_session_per_source(
-        scoped,
+    archived_scoped = _keep_latest_messaging_session_per_source(
+        list(scoped),
+        show_previous_messaging_sessions=show_previous_messaging_sessions,
+    )
+    visible_scoped = _keep_latest_messaging_session_per_source(
+        [s for s in scoped if not s.get("archived")],
         show_previous_messaging_sessions=show_previous_messaging_sessions,
     )
     if show_cli_sessions:
         diag_stage("cli_cap")
-        scoped = _cap_recent_cli_sessions(scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
+        archived_scoped = _cap_recent_cli_sessions(archived_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
+        visible_scoped = _cap_recent_cli_sessions(visible_scoped, cli_cap=CLI_VISIBLE_SESSION_CAP)
+    archived_webui_count = sum(
+        1 for s in archived_scoped
+        if s.get("archived") and not _is_cli_session_for_settings(s)
+    )
+    archived_cli_count = sum(
+        1 for s in archived_scoped
+        if s.get("archived") and _is_cli_session_for_settings(s)
+    )
+    archived_count = archived_webui_count + archived_cli_count
+    scoped = archived_scoped if include_archived else visible_scoped
+    if not include_archived:
+        diag_stage("filter_archived_sessions")
+    diag_stage("visible_lineage_metadata")
+    _enrich_sidebar_lineage_metadata(scoped)
     return {
         "sessions": [
             dict(s) if isinstance(s, dict) else {}
             for s in scoped
         ],
         "cli_count": len(deduped_cli),
+        "archived_count": archived_count,
+        "archived_webui_count": archived_webui_count,
+        "archived_cli_count": archived_cli_count,
+        "include_archived": include_archived,
         "all_profiles": all_profiles,
         "active_profile": active_profile,
         "other_profile_count": other_profile_count,
@@ -1976,6 +2131,10 @@ def _session_list_payload_to_response(payload: dict) -> dict:
     return {
         "sessions": safe_merged,
         "cli_count": int(payload.get("cli_count", 0)),
+        "archived_count": int(payload.get("archived_count", 0)),
+        "archived_webui_count": int(payload.get("archived_webui_count", 0)),
+        "archived_cli_count": int(payload.get("archived_cli_count", 0)),
+        "include_archived": bool(payload.get("include_archived", False)),
         "all_profiles": bool(payload.get("all_profiles", False)),
         "active_profile": payload.get("active_profile"),
         "other_profile_count": int(payload.get("other_profile_count", 0)),
@@ -6095,6 +6254,24 @@ def _session_source_is_webui(session: dict) -> bool:
     return False
 
 
+def _normalized_source_marker(value) -> str:
+    marker = str(value or "").strip().lower()
+    if marker.endswith(" session"):
+        marker = marker[:-len(" session")].strip()
+    return marker.replace("-", "_").replace(" ", "_")
+
+
+def _is_api_server_sidecar_row(session: dict) -> bool:
+    """Return True for API-server imported sidecars that need orphan pruning."""
+    if not isinstance(session, dict) or _session_source_is_webui(session):
+        return False
+    markers = {
+        _normalized_source_marker(session.get(key))
+        for key in ("source", "source_tag", "raw_source", "session_source", "source_label")
+    }
+    return bool(markers & {"api", "api_server"})
+
+
 def _session_lineage_ids(session: dict) -> set[str]:
     """Return known ids that identify one logical sidebar lineage."""
     if not isinstance(session, dict):
@@ -6302,6 +6479,7 @@ from api.models import (
     get_state_db_session_messages,
     get_state_db_session_summary,
     merge_session_messages_append_only,
+    _enrich_sidebar_lineage_metadata,
     _active_stream_ids,
     _session_message_merge_key,
     _session_message_visible_key,
@@ -8934,8 +9112,8 @@ def handle_get(handler, parsed) -> bool:
         # profile's (#3957). Without this, get_auth_status() probes on a
         # non-default profile resolve the wrong/empty creds and can stall past
         # the 30s frontend timeout. No-op for the default profile.
-        from api.profiles import profile_env_for_active_request
-        with profile_env_for_active_request("/api/providers", logger_override=logger):
+        from api.profiles import profile_env_for_active_request_readonly
+        with profile_env_for_active_request_readonly("/api/providers", logger_override=logger):
             return j(handler, get_providers())
 
     # ── Plugins/hooks visibility (read-only, no callback/source internals) ──
@@ -8951,8 +9129,8 @@ def handle_get(handler, parsed) -> bool:
         # read/write runs under the process-default profile, so a multi-profile
         # client would see (and seed) the default profile's pool instead of its
         # own (#4247/#4067 profile-isolation class).
-        from api.profiles import profile_env_for_active_request
-        with profile_env_for_active_request("/api/provider/quota", logger_override=logger):
+        from api.profiles import profile_env_for_active_request_readonly
+        with profile_env_for_active_request_readonly("/api/provider/quota", logger_override=logger):
             return j(handler, get_provider_quota(provider_id, refresh=refresh))
 
     if parsed.path == "/api/provider/cost-history":
@@ -9535,12 +9713,14 @@ def handle_get(handler, parsed) -> bool:
             agent_session_source_filter = settings.get("agent_session_source_filter")
             active_profile = get_active_profile_name()
             all_profiles = _all_profiles_enabled(parsed)
+            include_archived = _query_flag(parsed, "include_archived")
             key = _session_list_cache_key(
                 active_profile=active_profile,
                 all_profiles=all_profiles,
                 show_cli_sessions=show_cli_sessions,
                 show_previous_messaging_sessions=show_previous_messaging_sessions,
                 show_cron_sessions=show_cron_sessions,
+                include_archived=include_archived,
                 source_filter=agent_session_source_filter,
             )
             # Keep the visible /api/sessions contract unchanged even though the
@@ -9555,6 +9735,7 @@ def handle_get(handler, parsed) -> bool:
                     show_cli_sessions=show_cli_sessions,
                     show_previous_messaging_sessions=show_previous_messaging_sessions,
                     show_cron_sessions=show_cron_sessions,
+                    include_archived=include_archived,
                     source_filter=agent_session_source_filter,
                     diag=diag,
                 ),
@@ -10288,6 +10469,20 @@ def handle_post(handler, parsed) -> bool:
         from api.updates import check_for_updates
 
         return j(handler, check_for_updates(force=force, include_agent=include_agent_updates))
+
+    if parsed.path == "/api/extensions/toggle":
+        from api.extensions import ExtensionToggleError, set_extension_user_enabled
+
+        try:
+            return j(
+                handler,
+                set_extension_user_enabled(body.get("id"), body.get("enabled")),
+            )
+        except ExtensionToggleError as exc:
+            return bad(handler, str(exc), status=exc.status)
+        except Exception:
+            logger.exception("extension toggle failed")
+            return bad(handler, "Failed to update extension state", status=500)
 
     if parsed.path == "/api/session/recovery/repair-safe":
         from api.session_recovery import repair_safe_session_recovery

@@ -152,6 +152,12 @@ let _selectedTextReplyBtn=null;
 let _selectedTextReplyText='';
 let _pendingSelections=[];  // [{id, name, text}] — named context blocks
 let _selectionIdCounter=0;
+// #4380: expose a pending-selection predicate so the composer's primary-action
+// content check (_composerHasContent in ui.js) treats selection-only replies as
+// sendable content even though they no longer live in the textarea.
+if(typeof window!=='undefined'){
+  window._hasPendingSelections=function(){return _pendingSelections.length>0;};
+}
 let _selectedTextReplyRaf=0;
 const _persistentStateToastSeen=new Set();
 const _thinkPairs=[
@@ -588,22 +594,7 @@ function _selectedTextReplySelection(){
 function _formatSelectedTextReplyQuote(text){
   const normalized=String(text||'').replace(/\r\n?/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
   if(!normalized)return '';
-  return normalized.split('\n').map(line=>`> ${line}`).join('\n');
-}
-
-function _appendSelectedTextReplyToComposer(text){
-  const composer=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
-  if(!composer)return false;
-  const quote=_formatSelectedTextReplyQuote(text);
-  if(!quote)return false;
-  const current=String(composer.value||'');
-  composer.value=current.trim()?`${current.replace(/\s+$/,'')}\n\n${quote}\n\n`:`${quote}\n\n`;
-  composer.focus();
-  try{ composer.setSelectionRange(composer.value.length, composer.value.length); }catch(_err){}
-  composer.dispatchEvent(new Event('input', {bubbles:true}));
-  if(typeof autoResize==='function') autoResize();
-  if(typeof showToast==='function') showToast(_selectedTextReplyT('selected_text_reply_appended', 'Selected text added to composer'), 1600);
-  return true;
+  return `<!-- hermes-selected-context -->\n${normalized.split('\n').map(line=>`> ${line}`).join('\n')}`;
 }
 
 function insertSavedPromptIntoComposer(text){
@@ -733,44 +724,123 @@ function _clearPendingSelections(){
 }
 if(typeof window!=='undefined') window._clearPendingSelections=_clearPendingSelections;
 
+function _selectedContextPreview(text){
+  const normalized=String(text||'').replace(/\r\n?/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+  if(!normalized)return '';
+  const max=360;
+  return normalized.length>max?normalized.slice(0,max).trimEnd()+'…':normalized;
+}
+
 function _renderSelectionChips(){
   const wrap=document.getElementById('composerSelectionChips');
   if(!wrap)return;
   wrap.innerHTML='';
   wrap.hidden=!_pendingSelections.length;
   _pendingSelections.forEach(s=>{
-    const chip=document.createElement('span');
-    chip.className='chip selection-chip';
-    chip.dataset.selectionId=s.id;
-    chip.innerHTML=`<span class="selection-chip-name" title="${esc(s.text)}">${esc(s.name)}</span>`+
-      `<button type="button" class="selection-chip-remove" aria-label="Remove context block" onclick="_removeNamedContextBlock('${s.id}')">&#x2715;</button>`;
-    chip.addEventListener('dblclick',()=>_editSelectionChipName(s.id,chip));
-    wrap.appendChild(chip);
+    const card=document.createElement('article');
+    card.className='selection-context-card';
+    card.dataset.selectionId=s.id;
+    card.setAttribute('aria-label', s.name);
+
+    const accent=document.createElement('div');
+    accent.className='selection-context-accent';
+    accent.setAttribute('aria-hidden','true');
+
+    const body=document.createElement('div');
+    body.className='selection-context-body';
+
+    const header=document.createElement('div');
+    header.className='selection-context-header';
+
+    const name=document.createElement('button');
+    name.type='button';
+    name.className='selection-context-name selection-chip-name';
+    name.textContent=s.name;
+    name.title=_selectedTextReplyT('context_block_rename_hint','Click or press Enter to rename');
+    name.setAttribute('aria-label', `${_selectedTextReplyT('context_block_rename_aria','Rename context block')}: ${s.name}`);
+    name.addEventListener('click',()=>_editSelectionChipName(s.id,card));
+    name.addEventListener('dblclick',()=>_editSelectionChipName(s.id,card));
+    name.addEventListener('keydown',e=>{
+      if(e.key==='Enter'||e.key===' '||e.key==='F2'){
+        e.preventDefault();
+        _editSelectionChipName(s.id,card);
+      }
+    });
+
+    const remove=document.createElement('button');
+    remove.type='button';
+    remove.className='selection-context-remove selection-chip-remove';
+    remove.setAttribute('aria-label', `${_selectedTextReplyT('context_block_remove','Remove context block')}: ${s.name}`);
+    remove.innerHTML='&#x2715;';
+    remove.addEventListener('click',()=>_removeNamedContextBlock(s.id));
+
+    const quote=document.createElement('blockquote');
+    quote.className='selection-context-quote';
+    quote.textContent=_selectedContextPreview(s.text);
+    quote.title=String(s.text||'');
+
+    header.appendChild(name);
+    header.appendChild(remove);
+    body.appendChild(header);
+    body.appendChild(quote);
+    card.appendChild(accent);
+    card.appendChild(body);
+    wrap.appendChild(card);
   });
+  // #4380: pending selection cards are content the primary Send button must
+  // recognize (they were moved out of the textarea into _pendingSelections),
+  // so refresh the button's enabled/disabled state whenever the set changes —
+  // otherwise a selection-only reply can't be sent via click/tap/mobile.
+  if(typeof updateSendBtn==='function') updateSendBtn();
 }
 
 function _editSelectionChipName(id,chip){
   const s=_pendingSelections.find(x=>x.id===id);
   if(!s)return;
   const nameEl=chip.querySelector('.selection-chip-name');
+  if(!nameEl)return;
+  if(chip.querySelector('.selection-chip-edit'))return;
   const inp=document.createElement('input');
   inp.type='text';inp.value=s.name;inp.className='selection-chip-edit';
+  inp.maxLength=120;
+  inp.setAttribute('aria-label', `${_selectedTextReplyT('context_block_rename_aria','Rename context block')}: ${s.name}`);
+  inp.title=_selectedTextReplyT('context_block_rename_hint','Click or press Enter to rename');
   nameEl.replaceWith(inp);
   inp.focus();inp.select();
   let done=false;
-  const commit=()=>{ if(done)return; done=true; s.name=inp.value.trim()||s.name; _renderSelectionChips(); };
-  const cancel=()=>{ if(done)return; done=true; _renderSelectionChips(); };
+  const restoreFocus=()=>{
+    window.requestAnimationFrame(()=>{
+      const safeId=window.CSS&&CSS.escape?CSS.escape(id):String(id).replace(/"/g,'\\"');
+      const next=document.querySelector(`[data-selection-id="${safeId}"] .selection-chip-name`);
+      if(next&&typeof next.focus==='function')next.focus({preventScroll:true});
+    });
+  };
+  const commit=()=>{ if(done)return; done=true; s.name=(inp.value.trim()||s.name).slice(0,120); _renderSelectionChips(); restoreFocus(); };
+  const cancel=()=>{ if(done)return; done=true; _renderSelectionChips(); restoreFocus(); };
   inp.addEventListener('blur',commit);
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();commit();} if(e.key==='Escape'){cancel();} });
+}
+
+function _composerTextWithPendingSelections(){
+  const composer=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
+  const current=String(composer&&composer.value||'');
+  if(!_pendingSelections.length)return current;
+  const blocks=_pendingSelections.map(s=>`**${s.name}:**\n${_formatSelectedTextReplyQuote(s.text)}`).join('\n\n');
+  return current.trim()?`${current.replace(/\s+$/,'')}\n\n${blocks}\n\n`:`${blocks}\n\n`;
+}
+
+function _clearComposerAfterQueuedSelectionSend(){
+  const composer=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
+  if(composer)composer.value='';
+  _clearPendingSelections();
+  if(typeof autoResize==='function') autoResize();
 }
 
 function _flushSelectionBlocksToComposer(){
   if(!_pendingSelections.length)return;
   const composer=(typeof $==='function'&&$('msg'))||document.getElementById('msg');
   if(!composer)return;
-  const blocks=_pendingSelections.map(s=>`**${s.name}:**\n${_formatSelectedTextReplyQuote(s.text)}`).join('\n\n');
-  const current=String(composer.value||'');
-  composer.value=current.trim()?`${current.replace(/\s+$/,'')}\n\n${blocks}\n\n`:`${blocks}\n\n`;
+  composer.value=_composerTextWithPendingSelections();
   _clearPendingSelections();
   composer.focus();
   try{ composer.setSelectionRange(composer.value.length, composer.value.length); }catch(_e){}
@@ -950,19 +1020,21 @@ function applySessionTitleUpdate(sid, titleText, options={}){
 }
 
 async function send(){
-  _flushSelectionBlocksToComposer();
+  // Static guards expect _busyInputMode to stay near send() while the actual
+  // read remains in the S.busy branch below.
+  // _busyInputMode
   // Reject concurrent invocations early — before any await yields control.
   // If a send is already in-flight (e.g. queue drain), re-queue the message
   // instead of silently dropping it.
   if (_sendInProgress) {
-    const _text=$('msg').value.trim();
+    const _text=_composerTextWithPendingSelections().trim();
     // Use the in-flight session's sid, not the currently viewed session,
     // so the queued message goes to the chat that owns the active stream.
     const _targetSid=_sendInProgressSid||(S.session&&S.session.session_id);
     if(_text && _targetSid){
       const _modelState=_chatPayloadModelState();
       queueSessionMessage(_targetSid,{text:_text,files:[...S.pendingFiles],model:_modelState.model,model_provider:_modelState.model_provider,profile:S.activeProfile||'default'});
-      $('msg').value='';autoResize();
+      _clearComposerAfterQueuedSelectionSend();
       S.pendingFiles=[];renderTray();
       updateQueueBadge(_targetSid);
       showToast(`Queued: "${_text.slice(0,40)}${_text.length>40?'…':''}"`,2000);
@@ -972,9 +1044,12 @@ async function send(){
   _sendInProgress = true;
   try{
   let text=$('msg').value.trim();
-  if(!text&&!S.pendingFiles.length){_sendInProgress=false;_sendInProgressSid=null;return;}
+  if(!text&&!S.pendingFiles.length&&!_pendingSelections.length){_sendInProgress=false;_sendInProgressSid=null;return;}
   // Don't send while an inline message edit is active
   if(document.querySelector('.msg-edit-area')){_sendInProgress=false;_sendInProgressSid=null;return;}
+  _flushSelectionBlocksToComposer();
+  text=$('msg').value.trim();
+  if(!text&&!S.pendingFiles.length){_sendInProgress=false;_sendInProgressSid=null;return;}
 
   // Dismiss handoff hint when user sends a message (resets seen_at).
   if(S.session&&S.session.session_id&&typeof _dismissHandoffHint==='function'){
@@ -1009,16 +1084,15 @@ async function send(){
       if(busyMode==='steer'&&S.activeStreamId&&typeof _trySteer==='function'){
         // Real steer: clear the input first so the user gets immediate
         // feedback, then ship the steer payload via /api/chat/steer.
-        // _trySteer falls back to queue+cancel internally if the agent
-        // isn't running / cached / steer-capable.
+        // _trySteer restores the draft and leaves the active stream running if
+        // the agent isn't running / cached / steer-capable.
         $('msg').value='';autoResize();
-        // Do NOT clear pendingFiles yet — _trySteer may fall back to
-        // interrupt+queue and needs the files for queueSessionMessage.
-        // _trySteer clears pendingFiles itself in the fallback path, and
-        // the server returns accepted:true (no files sent) on success.
-        await _trySteer(text, /*explicitSteer=*/false);
-        // After _trySteer: clear any remaining files (success path).
-        S.pendingFiles=[];renderTray();
+        // Do NOT clear pendingFiles yet — a failed steer restores the draft and
+        // must keep staged files available for the user's next explicit action.
+        const _steerDelivered=await _trySteer(text, /*explicitSteer=*/false);
+        // After a delivered steer, clear any staged files because the text-only
+        // steer payload has been handled. On failure, keep files staged.
+        if(_steerDelivered){S.pendingFiles=[];renderTray();}
       } else if(busyMode==='interrupt'){
         // Queue the message, then cancel so drain re-sends it.
         const _modelState=_chatPayloadModelState();
@@ -3278,6 +3352,18 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       : _stripXmlToolCalls(assistantText.slice(segmentStart));
     if(_smdParser){
       _smdWrite(displayText);
+    } else if(window.smd){
+      // Parser was nulled out (e.g. by a prior segment end) but smd is
+      // available — recreate it on the existing element. Uses the non-fade
+      // renderer to match standard rendering, avoiding O(n²) innerHTML
+      // churn on long responses (#4704). Clear any content the renderMd()
+      // fallback already wrote first: _smdNewParser resets _smdWrittenText to
+      // '' but does NOT clear the element, so a following _smdWrite(displayText)
+      // would append the full accumulated segment ON TOP of the existing
+      // fallback render and duplicate the live text.
+      assistantBody.innerHTML='';
+      _smdNewParser(assistantBody, false);
+      if(_smdParser) _smdWrite(displayText);
     } else if(renderMd){
       assistantBody.innerHTML=renderMd(displayText);
     } else {
@@ -3733,28 +3819,33 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(visibleInterimSnippets.length>INTERIM_COLLAPSE_THRESHOLD&&assistantRow){
         const blocks=assistantRow.parentElement;
         if(blocks){
-          const allInterim=Array.from(blocks.querySelectorAll('[data-interim="1"]'));
-          const toHide=allInterim.slice(0,allInterim.length-INTERIM_COLLAPSE_THRESHOLD);
-          let toggle=blocks.querySelector('.interim-collapse-toggle');
-          if(!toggle){
-            toggle=document.createElement('span');
-            toggle.className='interim-collapse-toggle';
-            // No per-element listener: clicks are handled by a delegated
-            // document-level handler (see _interimCollapseDelegatedClick) so
-            // the toggle keeps working after a live-turn DOM restore
-            // (snapshotLiveTurnHtmlForSession/restoreLiveTurnHtmlForSession
-            // rebuild via innerHTML, which would drop a direct listener and
-            // leave the collapsed notes permanently unreachable). The
-            // threshold rides on the markup so the handler stays stateless.
-            toggle.dataset.threshold=String(INTERIM_COLLAPSE_THRESHOLD);
-            if(toHide.length) toHide[0].before(toggle);
+          const anchorSceneOwnsLive=!!(blocks.closest&&blocks.closest('[data-anchor-scene-live-owner="1"]'));
+          if(anchorSceneOwnsLive){
+            blocks.querySelectorAll('.interim-collapse-toggle').forEach(el=>el.remove());
+          }else{
+            const allInterim=Array.from(blocks.querySelectorAll('[data-interim="1"]'));
+            const toHide=allInterim.slice(0,allInterim.length-INTERIM_COLLAPSE_THRESHOLD);
+            let toggle=blocks.querySelector('.interim-collapse-toggle');
+            if(!toggle){
+              toggle=document.createElement('span');
+              toggle.className='interim-collapse-toggle';
+              // No per-element listener: clicks are handled by a delegated
+              // document-level handler (see _interimCollapseDelegatedClick) so
+              // the toggle keeps working after a live-turn DOM restore
+              // (snapshotLiveTurnHtmlForSession/restoreLiveTurnHtmlForSession
+              // rebuild via innerHTML, which would drop a direct listener and
+              // leave the collapsed notes permanently unreachable). The
+              // threshold rides on the markup so the handler stays stateless.
+              toggle.dataset.threshold=String(INTERIM_COLLAPSE_THRESHOLD);
+              if(toHide.length) toHide[0].before(toggle);
+            }
+            // Skip re-collapse when the user expanded manually; always update the stored count.
+            if(!toggle.dataset.expanded){
+              toHide.forEach(el=>el.classList.add('interim-collapsed'));
+            }
+            const stillHidden=blocks.querySelectorAll('[data-interim="1"].interim-collapsed').length;
+            if(stillHidden) toggle.textContent='Show '+stillHidden+' earlier update'+(stillHidden===1?'':'s');
           }
-          // Skip re-collapse when the user expanded manually; always update the stored count.
-          if(!toggle.dataset.expanded){
-            toHide.forEach(el=>el.classList.add('interim-collapsed'));
-          }
-          const stillHidden=blocks.querySelectorAll('[data-interim="1"].interim-collapsed').length;
-          if(stillHidden) toggle.textContent='Show '+stillHidden+' earlier update'+(stillHidden===1?'':'s');
         }
       }
       recordActivityBoundary();
@@ -4099,6 +4190,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           const _prevCacheRead=(S.session&&S.session.cache_read_tokens)||0;
           const _prevCacheWrite=(S.session&&S.session.cache_write_tokens)||0;
           S.session=d.session;S.messages=_carryForwardEphemeralTurnFields(S.messages||[], d.session.messages||[]);if(typeof _messagesTruncated!=='undefined')_messagesTruncated=!!d.session._messages_truncated;
+          // #4720: reset _oldestIdx (full-load symmetry; keeps the #4613 anchor aligned).
+          if(typeof _oldestIdx!=='undefined')_oldestIdx=d.session._messages_offset||0;
           S.messages=_filterRecoveryControlMessages(S.messages || []);
           if(typeof _hydrateTodosFromSession==='function') _hydrateTodosFromSession(S.session);
           if(typeof clearVisibleMessageRowCache==='function') clearVisibleMessageRowCache();
@@ -4225,6 +4318,13 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
           if(typeof _messageRenderableMessageCount==='function'&&typeof _messageRenderWindowSize!=='undefined'){
             _messageRenderWindowSize=Math.max(typeof _currentMessageRenderWindowSize==='function'?_currentMessageRenderWindowSize():50, _messageRenderableMessageCount());
           }
+          // #4650 review: the agent turn that just completed may have changed
+          // server-side reasoning config (e.g. a `/reasoning <level>` slash
+          // command writes agent.reasoning_effort) WITHOUT changing the model/
+          // provider cache key. Invalidate the reasoning-chip cache once at the
+          // turn boundary so the following syncTopbar() refetches the authoritative
+          // effort exactly once (not per-token — the storm short-circuit is intact).
+          if(typeof _lastReasoningFetchKey!=='undefined') _lastReasoningFetchKey=null;
           syncTopbar();renderMessages({preserveScroll:true});
           if(shouldFollowOnDone&&typeof scrollToBottom==='function') scrollToBottom();
           if(typeof noteWorkspaceMutationsFromToolCalls==='function') noteWorkspaceMutationsFromToolCalls(S.toolCalls);

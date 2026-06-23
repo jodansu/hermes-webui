@@ -41,6 +41,8 @@ const APP_TITLEBAR_KEYS = {
   memory: 'tab_memory', workspaces: 'tab_workspaces',
   profiles: 'tab_profiles', todos: 'tab_todos', insights: 'tab_insights', logs: 'tab_logs', settings: 'tab_settings',
 };
+const MAIN_VIEW_PANELS = ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'];
+const MAIN_VIEW_SIDEBAR_PANEL_FALLBACKS = { plugin: 'settings' };
 
 /**
  * Update the top app titlebar to reflect the current page or selected conversation.
@@ -235,6 +237,34 @@ function _resyncChatSidebarAfterPanelSwitch() {
   else run();
 }
 
+function _closeMobileSidebarAfterPanelSelection(){
+  if(typeof closeMobileSidebar!=='function')return;
+  if(typeof _isDesktopWidth==='function'&&_isDesktopWidth())return;
+  closeMobileSidebar();
+}
+
+function _panelFromCurrentMainView(){
+  const mainEl=document.querySelector('main.main');
+  if(!mainEl)return _currentPanel||'chat';
+  for(const panel of MAIN_VIEW_PANELS){
+    if(mainEl.classList.contains('showing-'+panel))return MAIN_VIEW_SIDEBAR_PANEL_FALLBACKS[panel]||panel;
+  }
+  if(_currentPanel&&$('panel'+_currentPanel.charAt(0).toUpperCase()+_currentPanel.slice(1)))return _currentPanel;
+  return 'chat';
+}
+
+function _syncMobileSidebarPanelFromMainView(){
+  const panel=_panelFromCurrentMainView();
+  if(!panel)return _currentPanel||'chat';
+  const panelEl=$('panel'+panel.charAt(0).toUpperCase()+panel.slice(1));
+  if(!panelEl)return _currentPanel||'chat';
+  _currentPanel=panel;
+  document.querySelectorAll('[data-panel]').forEach(t=>t.classList.toggle('active',t.dataset.panel===panel));
+  document.querySelectorAll('.panel-view').forEach(p=>p.classList.remove('active'));
+  panelEl.classList.add('active');
+  return panel;
+}
+
 async function switchPanel(name, opts = {}) {
   const nextPanel = name || 'chat';
   const prevPanel = _currentPanel;
@@ -278,7 +308,7 @@ async function switchPanel(name, opts = {}) {
   // showing-<name> class on <main>; no class means chat (the default).
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'].forEach(p => {
+    MAIN_VIEW_PANELS.forEach(p => {
       mainEl.classList.toggle('showing-' + p, nextPanel === p);
     });
   }
@@ -300,9 +330,10 @@ async function switchPanel(name, opts = {}) {
   }
   if (opts.fromRailClick && typeof _isDesktopWidth === 'function' && !_isDesktopWidth()) {
     const sidebar = document.querySelector('.sidebar');
-    const overlay = document.getElementById('mobileOverlay');
-    if (sidebar) sidebar.classList.add('mobile-open');
-    if (overlay) overlay.classList.add('visible');
+    if (sidebar) {
+      sidebar.classList.remove('mobile-session-page');
+      sidebar.classList.add('mobile-panel-drawer', 'mobile-open');
+    }
   }
   _resyncChatSidebarAfterPanelSwitch();
   if (nextPanel === 'chat' && typeof syncTopbar === 'function') syncTopbar();
@@ -905,6 +936,7 @@ function openCronDetail(id, el){
   _stopCronWatch();
   _renderCronDetail(job);
   _checkCronWatchOnDetail(id);
+  _closeMobileSidebarAfterPanelSelection();
 }
 
 function _clearCronDetail(){
@@ -3006,6 +3038,7 @@ async function loadKanbanTask(taskId){
       preview.style.display = '';
       preview.innerHTML = _kanbanRenderTaskDetail(data);
     }
+    _closeMobileSidebarAfterPanelSelection();
     showToast(`${t('kanban_task')}: ${title}`);
   } catch(e) { showToast(t('kanban_unavailable') + ': ' + (e.message || e), 'error'); }
 }
@@ -4258,6 +4291,7 @@ async function openSkill(name, el) {
     }
     _currentSkillDetail = { name, content: data.content || '', linked_files: data.linked_files || {} };
     _renderSkillDetail(name, data.content || '', data.linked_files || {});
+    _closeMobileSidebarAfterPanelSelection();
   } catch(e) { setStatus(t('skill_load_failed') + e.message); }
 }
 
@@ -4707,6 +4741,7 @@ async function openMemorySection(section, el) {
     await loadNotesSources(false);
   }
   _renderMemoryDetail(section);
+  _closeMobileSidebarAfterPanelSelection();
 }
 
 function editCurrentMemory() {
@@ -4914,15 +4949,27 @@ function _positionComposerWsDropdown(){
 
 function _positionProfileDropdown(){
   const dd=$('profileDropdown');
-  const chip=$('profileChip');
-  const footer=document.querySelector('.composer-footer');
-  if(!dd||!chip||!footer)return;
-  const chipRect=chip.getBoundingClientRect();
-  const footerRect=footer.getBoundingClientRect();
-  let left=chipRect.left-footerRect.left;
-  const maxLeft=Math.max(0, footer.clientWidth-dd.offsetWidth);
-  left=Math.max(0, Math.min(left, maxLeft));
-  dd.style.left=`${left}px`;
+  const trigger=_profileDropdownTrigger||$('profileChip');
+  if(!dd||!trigger)return;
+  const rect=trigger.getBoundingClientRect();
+  const gap=4;
+  const ddW=dd.offsetWidth||260;
+  // Decide direction: below for titlebar, above for composer
+  const openBelow=trigger===document.getElementById('titlebarProfileBtn');
+  // Horizontal: center on trigger, clamp to viewport
+  let left=rect.left+(rect.width/2)-(ddW/2);
+  left=Math.max(8, Math.min(left, window.innerWidth-ddW-8));
+  dd.style.left=left+'px';
+  // Vertical
+  if(openBelow){
+    dd.style.bottom=''; // clear any stale bottom from a prior composer-chip open
+    dd.style.top=(rect.bottom+gap)+'px';
+    dd.classList.add('open-below');
+  }else{
+    dd.style.top=''; dd.style.bottom=''; // clear fixed top/bottom
+    dd.style.bottom=(window.innerHeight-rect.top+gap)+'px';
+    dd.classList.remove('open-below');
+  }
 }
 
 function renderWorkspaceDropdownInto(dd, workspaces, currentWs){
@@ -5241,6 +5288,7 @@ function openWorkspaceDetail(path, el){
   if (target) target.classList.add('active');
   _workspacePreFormDetail = null;
   _renderWorkspaceDetail(ws);
+  _closeMobileSidebarAfterPanelSelection();
 }
 
 function _clearWorkspaceDetail(){
@@ -5523,6 +5571,7 @@ async function switchToWorkspace(path,name){
 // ── Profile panel + dropdown ──
 let _profilesCache = null;
 let _profileSwitchGeneration = 0;
+let _profileDropdownTrigger = null;  // tracks which element triggered the dropdown
 
 async function _profileSwitchPanelLoad(){
   if (_currentPanel === 'skills') await loadSkills();
@@ -5556,6 +5605,12 @@ function _refreshProfileSwitchBackground(gen){
     if (typeof _setTabOrder === 'function') _setTabOrder(order);
     if (typeof _applyTabOrder === 'function') _applyTabOrder(order);
     if (typeof _applyTabVisibility === 'function') _applyTabVisibility(hidden);
+    _ensureComposerControlVisibilityState(s||{});
+    _renderComposerControlChips();
+    _renderComposerSituationalControlChips();
+    if(typeof _applyComposerFooterVisibilitySettings==='function') _applyComposerFooterVisibilitySettings();
+    window._showTitlebarProfile=!!(s&&s.show_titlebar_profile);
+    if(typeof _applyTitlebarProfileVisibility==='function') _applyTitlebarProfileVisibility();
   }).catch(function(){});
 }
 
@@ -5726,6 +5781,7 @@ function openProfileDetail(name, el){
   if (target) target.classList.add('active');
   _profilePreFormDetail = null;
   _renderProfileDetail(p, _profilesCache.active);
+  _closeMobileSidebarAfterPanelSelection();
 }
 
 function _clearProfileDetail(){
@@ -5794,14 +5850,19 @@ function renderProfileDropdown(data) {
     mgmt.onclick = () => { closeProfileDropdown(); mobileSwitchPanel('profiles'); };
     dd.appendChild(mgmt);
   }
+  // Sync titlebar label to the resolved active profile
+  const tbl = $('titlebarProfileLabel');
+  if (tbl) tbl.textContent = active;
 }
 
-function toggleProfileDropdown() {
+function toggleProfileDropdown(e) {
   const dd = $('profileDropdown');
   if (!dd) return;
   if (dd.classList.contains('open')) { closeProfileDropdown(); return; }
   closeWsDropdown(); // close workspace dropdown if open
   if(typeof closeModelDropdown==='function') closeModelDropdown();
+  // Track which element triggered the dropdown for positioning
+  _profileDropdownTrigger = (e && e.currentTarget) || $('profileChip');
   api('/api/profiles').then(data => {
     // In single profile mode, don't show profile dropdown at all
     if (data.single_profile_mode) {
@@ -5811,8 +5872,11 @@ function toggleProfileDropdown() {
     renderProfileDropdown(data);
     dd.classList.add('open');
     _positionProfileDropdown();
+    // Mark the triggering button as active
     const chip=$('profileChip');
-    if(chip) chip.classList.add('active');
+    if(chip && _profileDropdownTrigger===chip) chip.classList.add('active');
+    const tbtn=$('titlebarProfileBtn');
+    if(tbtn && _profileDropdownTrigger===tbtn) tbtn.classList.add('active');
   }).catch(e => { showToast(t('profiles_load_failed')); });
 }
 
@@ -5821,9 +5885,11 @@ function closeProfileDropdown() {
   if (dd) dd.classList.remove('open');
   const chip=$('profileChip');
   if(chip) chip.classList.remove('active');
+  const tbtn=$('titlebarProfileBtn');
+  if(tbtn) tbtn.classList.remove('active');
 }
 document.addEventListener('click', e => {
-  if (!e.target.closest('#profileChipWrap') && !e.target.closest('#profileDropdown')) closeProfileDropdown();
+  if (!e.target.closest('#profileChipWrap') && !e.target.closest('#titlebarProfileBtn') && !e.target.closest('#profileDropdown')) closeProfileDropdown();
 });
 window.addEventListener('resize',()=>{
   const dd=$('profileDropdown');
@@ -5841,11 +5907,15 @@ async function switchToProfile(name) {
   // feedback while the async switch is in progress.
   const _chip = $('profileChip');
   const _chipLabel = $('profileChipLabel');
+  const _titlebarBtn = $('titlebarProfileBtn');
+  const _titlebarLabel = $('titlebarProfileLabel');
   const _prevProfileName = S.activeProfile || 'default';
   const _switchGen = ++_profileSwitchGeneration;
   if (_chip) { _chip.classList.add('switching'); _chip.disabled = true; }
+  if (_titlebarBtn) { _titlebarBtn.classList.add('switching'); _titlebarBtn.disabled = true; }
   // Optimistic name update — shows the target name right away
   if (_chipLabel) _chipLabel.textContent = name;
+  if (_titlebarLabel) _titlebarLabel.textContent = name;
 
   // Determine whether the current session has any messages.
   // A session with messages is "in progress" and belongs to the current profile —
@@ -5861,6 +5931,12 @@ async function switchToProfile(name) {
     if (_switchGen !== _profileSwitchGeneration) return;
     S.activeProfile = data.active || name;
     S.activeProfileIsDefault = !!data.is_default;
+    // #4650 review: a profile switch can change agent.reasoning_effort (and other
+    // reasoning inputs like base_url) WITHOUT changing the default model/provider,
+    // which is all the reasoning-chip cache key tracks. Force exactly one reasoning
+    // refetch for the new profile so the chip reflects the new profile's effort
+    // (the syncTopbar() calls below route through syncReasoningChip()).
+    if (typeof _lastReasoningFetchKey !== 'undefined') _lastReasoningFetchKey = null;
 
     // Reconnect the gateway SSE to the NEW profile's watcher. The backend watcher
     // registry is now profile-keyed (#3629), but this tab's existing EventSource is
@@ -5984,10 +6060,12 @@ async function switchToProfile(name) {
   } catch (e) {
     // Revert the optimistic name update on error
     if (_switchGen === _profileSwitchGeneration && _chipLabel) _chipLabel.textContent = _prevProfileName;
+    if (_switchGen === _profileSwitchGeneration && _titlebarLabel) _titlebarLabel.textContent = _prevProfileName;
     if (_switchGen === _profileSwitchGeneration) showToast(t('switch_failed') + e.message);
   } finally {
     // Always remove loading indicator regardless of success or failure
     if (_switchGen === _profileSwitchGeneration && _chip) { _chip.classList.remove('switching'); _chip.disabled = false; }
+    if (_switchGen === _profileSwitchGeneration && _titlebarBtn) { _titlebarBtn.classList.remove('switching'); _titlebarBtn.disabled = false; }
   }
 }
 
@@ -6223,6 +6301,7 @@ let _settingsIndex = null;
 let _settingsIndexPromise = null;
 let _settingsSearchSeq = 0;
 let _extensionsStatusData = null;
+let _extensionsSidecarMonitorSeq = 0;
 let _settingsSearchDismissListenerRegistered = false;
 let _settingsAppearanceAutosaveTimer = null;
 let _settingsAppearanceAutosaveRetryPayload = null;
@@ -6412,6 +6491,82 @@ function _toggleTabVisibilityChip(panel){
   _scheduleAppearanceAutosave();
 }
 
+function _ensureComposerControlVisibilityState(settings){
+  const fromSettings=(typeof _composerControlVisibilityFromSettings==='function')
+    ? _composerControlVisibilityFromSettings(settings||{})
+    : {};
+  if(!window._composerControlVisibility) window._composerControlVisibility={};
+  Object.assign(window._composerControlVisibility, fromSettings);
+}
+
+function _composerControlVisibilityPayload(){
+  const payload={};
+  const baseDefs=Array.isArray(window._COMPOSER_CONTROL_TOGGLE_DEFS)?window._COMPOSER_CONTROL_TOGGLE_DEFS:[];
+  const situationalDefs=Array.isArray(window._COMPOSER_SITUATIONAL_CONTROL_TOGGLE_DEFS)?window._COMPOSER_SITUATIONAL_CONTROL_TOGGLE_DEFS:[];
+  const defs=baseDefs.concat(situationalDefs);
+  const state=window._composerControlVisibility||{};
+  defs.forEach(function(def){payload[def.key]=!!state[def.key];});
+  return payload;
+}
+
+function _toggleComposerControlChip(key){
+  if(!window._composerControlVisibility) window._composerControlVisibility={};
+  window._composerControlVisibility[key]=!window._composerControlVisibility[key];
+  if(typeof _renderComposerControlChips==='function') _renderComposerControlChips();
+  if(typeof _renderComposerSituationalControlChips==='function') _renderComposerSituationalControlChips();
+  if(typeof _applyComposerFooterVisibilitySettings==='function') _applyComposerFooterVisibilitySettings();
+  _scheduleAppearanceAutosave();
+}
+
+function _composerControlChipLabel(def){
+  if(!def) return '';
+  if(def.labelKey&&typeof t==='function'){
+    const localized=t(def.labelKey);
+    if(typeof localized==='string'&&localized&&localized!==def.labelKey) return localized;
+  }
+  return def.label||'';
+}
+
+function _renderComposerControlChips(){
+  const container=$('composerControlsChips');
+  if(!container) return;
+  const defs=Array.isArray(window._COMPOSER_CONTROL_TOGGLE_DEFS)?window._COMPOSER_CONTROL_TOGGLE_DEFS:[];
+  const state=window._composerControlVisibility||{};
+  container.innerHTML='';
+  defs.forEach(function(def){
+    const chip=document.createElement('button');
+    chip.type='button';
+    chip.className='tab-visibility-chip';
+    const hidden=!!state[def.key];
+    if(hidden) chip.classList.add('chip-off');
+    chip.textContent=_composerControlChipLabel(def);
+    chip.setAttribute('role','switch');
+    chip.setAttribute('aria-checked',hidden?'false':'true');
+    chip.onclick=function(){_toggleComposerControlChip(def.key);};
+    container.appendChild(chip);
+  });
+}
+
+function _renderComposerSituationalControlChips(){
+  const container=$('composerSituationalControlsChips');
+  if(!container) return;
+  const defs=Array.isArray(window._COMPOSER_SITUATIONAL_CONTROL_TOGGLE_DEFS)?window._COMPOSER_SITUATIONAL_CONTROL_TOGGLE_DEFS:[];
+  const state=window._composerControlVisibility||{};
+  container.innerHTML='';
+  defs.forEach(function(def){
+    const chip=document.createElement('button');
+    chip.type='button';
+    chip.className='tab-visibility-chip';
+    const hidden=!!state[def.key];
+    if(hidden) chip.classList.add('chip-off');
+    chip.textContent=_composerControlChipLabel(def);
+    chip.setAttribute('role','switch');
+    chip.setAttribute('aria-checked',hidden?'false':'true');
+    chip.onclick=function(){_toggleComposerControlChip(def.key);};
+    container.appendChild(chip);
+  });
+}
+
 function switchSettingsSection(name,opts){
   // If the main content is not showing settings, just remember the section
   // without force-switching the panel. The section will be applied when the
@@ -6454,6 +6609,7 @@ function switchSettingsSection(name,opts){
     if(section==='plugins') loadPluginsPanel();
     if(section==='extensions') loadExtensionsPanel();
   }
+  if(opts&&opts.fromSidebarItem)_closeMobileSidebarAfterPanelSelection();
 }
 
 async function _buildSettingsIndex() {
@@ -6736,8 +6892,10 @@ function _appearancePayloadFromUi(){
     session_endless_scroll: !!($('settingsSessionEndlessScroll')||{}).checked,
     auto_scroll_follow: !!($('settingsAutoScrollFollow')||{}).checked,
     render_user_markdown: !!($('settingsRenderUserMarkdown')||{}).checked,
+    show_titlebar_profile: !!($('settingsShowTitlebarProfile')||{}).checked,
     worklog_details_expanded_default: worklogDetailsExpanded,
     activity_feed_expanded_default: worklogDetailsExpanded,
+    ..._composerControlVisibilityPayload(),
     hidden_tabs: _getHiddenTabs(),
     tab_order: _getTabOrder(),
   };
@@ -6831,6 +6989,12 @@ async function _autosaveAppearanceSettings(payload){
           ? saved.worklog_details_expanded_default
           : saved.activity_feed_expanded_default
       );
+    }
+    if(saved){
+      _ensureComposerControlVisibilityState(saved);
+      _renderComposerControlChips();
+      _renderComposerSituationalControlChips();
+      if(typeof _applyComposerFooterVisibilitySettings==='function') _applyComposerFooterVisibilitySettings();
     }
     _setAppearanceAutosaveStatus('saved');
   }catch(e){
@@ -7120,6 +7284,19 @@ async function loadSettingsPanel(){
         _scheduleAppearanceAutosave();
       };
     }
+    const showTitlebarProfileCb=$('settingsShowTitlebarProfile');
+    if(showTitlebarProfileCb){
+      showTitlebarProfileCb.checked=!!settings.show_titlebar_profile;
+      showTitlebarProfileCb.onchange=function(){
+        window._showTitlebarProfile=this.checked;
+        if(typeof _applyTitlebarProfileVisibility==='function') _applyTitlebarProfileVisibility();
+        _scheduleAppearanceAutosave();
+      };
+    }
+    _ensureComposerControlVisibilityState(settings);
+    _renderComposerControlChips();
+    _renderComposerSituationalControlChips();
+    if(typeof _applyComposerFooterVisibilitySettings==='function') _applyComposerFooterVisibilitySettings();
     // Tab visibility/order chips (dynamically populated from DOM)
     var hiddenTabs=[];
     if(Array.isArray(settings.hidden_tabs)){
@@ -7502,7 +7679,7 @@ async function loadSettingsPanel(){
 }
 
 
-// ── Extensions panel (read-only browser-origin diagnostics) ────────────────
+// ── Extensions panel (browser-origin diagnostics + local enable controls) ──
 
 function _extensionStatusLabel(value){
   return value ? 'Enabled' : 'Disabled';
@@ -7525,9 +7702,13 @@ function _extensionWarningList(warnings){
     return '<div class="extension-url-empty">No warnings.</div>';
   }
   return '<ul class="extension-warning-list">'+warnings.map(item=>{
-    const code=esc((item&&item.code)||'unknown_warning');
+    const rawCode=(item&&item.code)||'unknown_warning';
+    const code=esc(rawCode);
     const source=esc((item&&item.source)||'unknown');
-    return `<li><code>${code}</code><span>${source}</span></li>`;
+    const hint=rawCode==='extension_state_unknown_ids'
+      ? '<span>Some saved disabled-extension overrides no longer match the current manifest; re-added extensions with the same id may stay disabled.</span>'
+      : '';
+    return `<li><code>${code}</code><span>${source}</span>${hint}</li>`;
   }).join('')+'</ul>';
 }
 
@@ -7536,7 +7717,128 @@ function _extensionCountValue(counts,key,urls){
   return Array.isArray(urls)?urls.length:0;
 }
 
-function _renderExtensionsPanel(data){
+function _extensionEntryStatusLabel(entry){
+  const status=(entry&&entry.status)||'';
+  if(status==='manifest_disabled') return 'Disabled in manifest';
+  if(status==='user_disabled') return 'Disabled';
+  if(status==='enabled') return 'Enabled';
+  return 'Unknown';
+}
+
+function _extensionEntryBadge(entry){
+  const enabled=!!(entry&&entry.effective_enabled);
+  const cls=enabled?'extension-status-badge-on':'extension-status-badge-off';
+  return `<span class="extension-status-badge ${cls}">${esc(_extensionEntryStatusLabel(entry))}</span>`;
+}
+
+function _extensionInstalledList(extensions,extensionDirConfigured){
+  const list=Array.isArray(extensions)?extensions:[];
+  if(!list.length){
+    if(!extensionDirConfigured) return '<div class="extension-url-empty">No extension directory is configured.</div>';
+    return '<div class="extension-url-empty">No manifest extensions are installed in the configured bundle.</div>';
+  }
+  return `<div class="extension-installed-list">${list.map(entry=>{
+    const id=(entry&&entry.id)||'';
+    const name=(entry&&entry.name)||id||'Unnamed extension';
+    const canToggle=!!(entry&&entry.can_toggle);
+    const userEnabled=!!(entry&&entry.user_enabled);
+    const disabledAttr=canToggle?'':' disabled aria-disabled="true"';
+    const buttonText=userEnabled?'Disable':'Enable';
+    const nextEnabled=userEnabled?'false':'true';
+    const note=canToggle
+      ? 'Toggles the WebUI-managed override for the next app load.'
+      : 'Manifest-disabled entries cannot be enabled from WebUI.';
+    return `<div class="extension-installed-row" data-extension-id="${esc(id)}">
+      <div class="extension-installed-main">
+        <div class="extension-installed-title-row">
+          <div class="extension-installed-title">${esc(name)}</div>
+          ${_extensionEntryBadge(entry)}
+        </div>
+        <div class="extension-installed-meta"><code>${esc(id)}</code><span>${esc(note)}</span></div>
+      </div>
+      <button class="sm-btn extension-toggle-btn" type="button" data-extension-toggle-id="${esc(id)}" data-extension-next-enabled="${nextEnabled}"${disabledAttr}>${esc(buttonText)}</button>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function _extensionSidecarHealthBadge(status,label){
+  const safeStatus=['checking','healthy','unhealthy','blocked'].includes(status)?status:'checking';
+  return `<span class="extension-sidecar-status-badge extension-sidecar-status-${safeStatus}">${esc(label||safeStatus)}</span>`;
+}
+
+function _extensionSidecarCard(sidecars){
+  const list=Array.isArray(sidecars)?sidecars:[];
+  const body=list.length?`<div class="extension-sidecar-list">${list.map((sidecar,index)=>{
+    const id=(sidecar&&sidecar.id)||'';
+    const name=(sidecar&&sidecar.name)||'';
+    const title=name||id||'Unnamed extension';
+    const meta=(name&&id)?id:(sidecar&&sidecar.type)||'loopback';
+    const origin=(sidecar&&sidecar.origin)||'';
+    const healthPath=(sidecar&&sidecar.health_path)||'';
+    const healthUrl=(sidecar&&sidecar.health_url)||'';
+    return `<div class="extension-sidecar-row" data-sidecar-index="${index}">
+      <div class="extension-sidecar-row-head">
+        <div class="extension-sidecar-title">${esc(title)}</div>
+        <span id="extensionSidecarHealth${index}" data-sidecar-health-index="${index}">${_extensionSidecarHealthBadge('checking','checking')}</span>
+      </div>
+      <div class="extension-sidecar-meta">${esc(meta)}</div>
+      <div class="extension-sidecar-fields">
+        <div><span>Origin</span><code>${esc(origin)}</code></div>
+        <div><span>Health path</span><code>${esc(healthPath)}</code></div>
+        <div><span>Health URL</span><code>${esc(healthUrl)}</code></div>
+      </div>
+    </div>`;
+  }).join('')}</div>`:'<div class="extension-url-empty">No loopback sidecars declared.</div>';
+  return `
+    <div class="provider-card extension-sidecars-card">
+      <div class="provider-card-header plugin-card-header">
+        <div class="provider-card-info">
+          <div class="provider-card-name">Loopback sidecars</div>
+          <div class="provider-card-meta">Declared local companions; health is checked directly from this browser with WebUI credentials omitted.</div>
+        </div>
+      </div>
+      <div class="provider-card-body extension-card-body">
+        ${body}
+      </div>
+    </div>`;
+}
+
+function _setExtensionSidecarHealth(index,status,label){
+  const el=document.querySelector(`[data-sidecar-health-index="${index}"]`);
+  if(el) el.innerHTML=_extensionSidecarHealthBadge(status,label);
+}
+
+async function _checkExtensionSidecarHealth(sidecar,index,seq){
+  const healthUrl=sidecar&&sidecar.health_url;
+  if(!healthUrl){
+    _setExtensionSidecarHealth(index,'blocked','unreachable / blocked');
+    return;
+  }
+  let controller=null;
+  let timeoutId=null;
+  try{
+    if(typeof AbortController!=='undefined'){
+      controller=new AbortController();
+      timeoutId=setTimeout(()=>controller.abort(),2500);
+    }
+    const res=await fetch(healthUrl,{credentials:'omit',cache:'no-store',signal:controller?controller.signal:undefined});
+    if(seq!==_extensionsSidecarMonitorSeq) return;
+    if(res.ok) _setExtensionSidecarHealth(index,'healthy','healthy');
+    else _setExtensionSidecarHealth(index,'unhealthy','unhealthy');
+  }catch(_e){
+    if(seq!==_extensionsSidecarMonitorSeq) return;
+    _setExtensionSidecarHealth(index,'blocked','unreachable / blocked');
+  }finally{
+    if(timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function _monitorExtensionSidecars(sidecars,seq){
+  if(!Array.isArray(sidecars)||sidecars.length===0) return;
+  sidecars.forEach((sidecar,index)=>_checkExtensionSidecarHealth(sidecar,index,seq));
+}
+
+function _renderExtensionsPanel(data,seq){
   const target=$('extensionsDiagnostics');
   const copyBtn=$('extensionsCopyDiagnosticsBtn');
   if(!target) return;
@@ -7546,15 +7848,20 @@ function _renderExtensionsPanel(data){
   const counts=(data&&data.counts)||{};
   const scripts=Array.isArray(data&&data.script_urls)?data.script_urls:[];
   const styles=Array.isArray(data&&data.stylesheet_urls)?data.stylesheet_urls:[];
+  const sidecars=Array.isArray(data&&data.sidecars)?data.sidecars:[];
+  const extensions=Array.isArray(data&&data.extensions)?data.extensions:[];
   const statusClass=(data&&data.enabled)?'extension-card-enabled':'extension-card-disabled';
   const scriptCount=_extensionCountValue(counts,'script_urls',scripts);
   const styleCount=_extensionCountValue(counts,'stylesheet_urls',styles);
+  const sidecarCount=_extensionCountValue(counts,'sidecars',sidecars);
+  const manifestExtensionCount=_extensionCountValue(counts,'manifest_extensions',extensions);
+  const userDisabledCount=_extensionCountValue(counts,'user_disabled',[]);
   target.innerHTML=`
     <div class="provider-card extension-status-card ${statusClass}">
       <div class="provider-card-header plugin-card-header">
         <div class="provider-card-info">
           <div class="provider-card-name">Extension runtime</div>
-          <div class="provider-card-meta">Read-only status from /api/extensions/status</div>
+          <div class="provider-card-meta">Status from /api/extensions/status; toggles persist a local override for installed manifest entries.</div>
         </div>
         <span class="provider-card-badge ${data&&data.enabled?'':'plugin-card-badge-disabled'}">${_extensionStatusLabel(!!(data&&data.enabled))}</span>
       </div>
@@ -7568,9 +7875,24 @@ function _renderExtensionsPanel(data){
           <div><span>Manifest entries inspected</span><code>${Number(manifest.entry_count)||0}</code></div>
           <div><span>Manifest script count</span><code>${Number(manifest.script_count)||0}</code></div>
           <div><span>Manifest stylesheet count</span><code>${Number(manifest.stylesheet_count)||0}</code></div>
+          <div><span>Manifest sidecar count</span><code>${Number(manifest.sidecar_count)||0}</code></div>
           <div><span>Final script count</span><code>${scriptCount}</code></div>
           <div><span>Final stylesheet count</span><code>${styleCount}</code></div>
+          <div><span>Loopback sidecar count</span><code>${sidecarCount}</code></div>
+          <div><span>Installed manifest extensions</span><code>${manifestExtensionCount}</code></div>
+          <div><span>User-disabled extensions</span><code>${userDisabledCount}</code></div>
         </div>
+      </div>
+    </div>
+    <div class="provider-card extension-installed-card">
+      <div class="provider-card-header plugin-card-header">
+        <div class="provider-card-info">
+          <div class="provider-card-name">Installed manifest extensions</div>
+          <div class="provider-card-meta">Enable or disable already-present local extensions. Reload WebUI to apply injected asset changes to this browser tab.</div>
+        </div>
+      </div>
+      <div class="provider-card-body extension-card-body">
+        ${_extensionInstalledList(extensions,!!(data&&data.extension_dir_configured))}
       </div>
     </div>
     <div class="provider-card extension-assets-card">
@@ -7587,6 +7909,7 @@ function _renderExtensionsPanel(data){
         ${_extensionAssetList(styles)}
       </div>
     </div>
+    ${_extensionSidecarCard(sidecars)}
     <div class="provider-card extension-warnings-card">
       <div class="provider-card-header plugin-card-header">
         <div class="provider-card-info">
@@ -7599,6 +7922,34 @@ function _renderExtensionsPanel(data){
       </div>
     </div>
   `;
+  _bindExtensionToggleButtons(target);
+  _monitorExtensionSidecars(sidecars,seq);
+}
+
+function _bindExtensionToggleButtons(root){
+  if(!root) return;
+  root.querySelectorAll('[data-extension-toggle-id]').forEach(btn=>{
+    btn.addEventListener('click',()=>handleExtensionToggle(btn));
+  });
+}
+
+async function handleExtensionToggle(btn){
+  if(!btn||btn.disabled) return;
+  const id=btn.dataset.extensionToggleId||'';
+  const enabled=btn.dataset.extensionNextEnabled==='true';
+  if(!id) return;
+  const previousText=btn.textContent;
+  btn.disabled=true;
+  btn.textContent=enabled?'Enabling…':'Disabling…';
+  try{
+    const data=await api('/api/extensions/toggle',{method:'POST',body:JSON.stringify({id,enabled})});
+    showToast(enabled?'Extension enabled. Reload WebUI to apply changes.':'Extension disabled. Reload WebUI to apply changes.');
+    _renderExtensionsPanel(data,++_extensionsSidecarMonitorSeq);
+  }catch(e){
+    btn.disabled=false;
+    btn.textContent=previousText;
+    showToast('Failed to update extension: '+(e&&e.message?e.message:String(e)));
+  }
 }
 
 async function loadExtensionsPanel(){
@@ -7606,10 +7957,12 @@ async function loadExtensionsPanel(){
   const copyBtn=$('extensionsCopyDiagnosticsBtn');
   if(!target) return;
   if(copyBtn) copyBtn.disabled=true;
+  const seq=++_extensionsSidecarMonitorSeq;
   target.innerHTML='<div class="extensions-loading">Loading extension diagnostics…</div>';
   try{
     const data=await api('/api/extensions/status');
-    _renderExtensionsPanel(data);
+    if(seq!==_extensionsSidecarMonitorSeq) return;
+    _renderExtensionsPanel(data,seq);
   }catch(e){
     _extensionsStatusData=null;
     if(copyBtn) copyBtn.disabled=true;
@@ -7788,7 +8141,7 @@ async function switchPluginPage(event, path, label) {
   _currentPanel = 'plugin';
   const mainEl = document.querySelector('main.main');
   if (mainEl) {
-    ['settings','skills','memory','tasks','kanban','workspaces','profiles','insights','logs','plugin'].forEach(p => {
+    MAIN_VIEW_PANELS.forEach(p => {
       mainEl.classList.toggle('showing-' + p, p === 'plugin');
     });
   }
@@ -8912,6 +9265,14 @@ function _openAuxAdvancedOptions(taskKey,cfg){
     if(typeof showToast==='function') showToast(isMain?(t('settings_main_advanced_saved')||'Main model options saved'):(t('settings_aux_advanced_saved')||'Auxiliary options saved'));
     overlay.style.display='none';
     _loadAuxiliaryModels();
+    // #4650 review: a main-model advanced save can change base_url, which
+    // /api/reasoning's answer depends on for some providers (e.g. LM Studio),
+    // WITHOUT changing the model/provider cache key. Invalidate the reasoning
+    // cache and refresh so the chip reflects the new config (one refetch).
+    if(isMain){
+      if(typeof _lastReasoningFetchKey!=='undefined') _lastReasoningFetchKey=null;
+      if(typeof fetchReasoningChip==='function') fetchReasoningChip();
+    }
    }catch(e){
     if(typeof showToast==='function') showToast(isMain?(t('settings_main_advanced_save_failed')||'Failed to save main model options'):(t('settings_aux_advanced_save_failed')||'Failed to save auxiliary options'));
    }
