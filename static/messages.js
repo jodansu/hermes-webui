@@ -56,6 +56,23 @@ function _isDocumentVisibleAndFocused() {
   return true;
 }
 
+let _desktopBackgroundedForNotifications=false;
+// Desktop shells can background a visible document; keep that signal notification-only.
+if(typeof window!=='undefined'){
+  window.__hermesSetBackgrounded=(value)=>{
+    _desktopBackgroundedForNotifications=!!value;
+    if(_desktopBackgroundedForNotifications){
+      for(const k in _STREAM_NOTIFICATION_BACKGROUND){
+        const e=_STREAM_NOTIFICATION_BACKGROUND[k];
+        if(e) e.wasBackgrounded=true;
+      }
+    }
+  };
+}
+function _isBackgroundedForBrowserNotification(){
+  return !!(typeof document!=='undefined'&&document.hidden)||_desktopBackgroundedForNotifications;
+}
+
 function _isSessionCurrentPane(sid) {
   if(!sid || !S.session || S.session.session_id!==sid) return false;
   // During session switching, S.session still points at the previous row until
@@ -1521,6 +1538,7 @@ async function send(){
 }
 
 const LIVE_STREAMS={};
+const _STREAM_NOTIFICATION_BACKGROUND={};
 
 // #4416: track whether the tab was hidden at ANY point during a live stream, so
 // the response-complete notification fires for a backgrounded tab even when
@@ -1549,6 +1567,22 @@ function _clearStreamHidden(sid, streamId){
   if(!e) return;
   if(streamId&&e.streamId&&e.streamId!==streamId) return;
   delete _STREAM_WAS_HIDDEN[sid];
+}
+function _clearStreamNotificationBackground(sid, streamId){
+  if(!sid) return;
+  const e=_STREAM_NOTIFICATION_BACKGROUND[sid];
+  if(!e) return;
+  if(streamId&&e.streamId&&e.streamId!==streamId) return;
+  delete _STREAM_NOTIFICATION_BACKGROUND[sid];
+}
+function _shouldForceCompletionNotification(sid, streamId){
+  const hiddenEntry=_STREAM_WAS_HIDDEN[sid];
+  const backgroundEntry=_STREAM_NOTIFICATION_BACKGROUND[sid];
+  const wasHidden=!!(hiddenEntry&&hiddenEntry.wasHidden);
+  const wasBackgrounded=!!(backgroundEntry&&backgroundEntry.wasBackgrounded);
+  _clearStreamHidden(sid, streamId);
+  _clearStreamNotificationBackground(sid, streamId);
+  return wasHidden||wasBackgrounded;
 }
 
 function closeLiveStream(sessionId, streamId, source){
@@ -1627,6 +1661,11 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     const _keep=reconnecting&&_prev&&_prev.streamId===streamId;
     if(!_keep){
       _STREAM_WAS_HIDDEN[activeSid]={streamId,wasHidden:(typeof document!=='undefined'&&!!document.hidden)};
+    }
+    const _prevBackground=_STREAM_NOTIFICATION_BACKGROUND[activeSid];
+    const _keepBackground=reconnecting&&_prevBackground&&_prevBackground.streamId===streamId;
+    if(!_keepBackground){
+      _STREAM_NOTIFICATION_BACKGROUND[activeSid]={streamId,wasBackgrounded:_desktopBackgroundedForNotifications};
     }
   }
   if(!INFLIGHT[activeSid]) INFLIGHT[activeSid]={messages:[...S.messages],uploaded:[...uploaded],toolCalls:[]};
@@ -1898,6 +1937,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
     _clearOwnerInflightState();
     _clearStreamHidden(activeSid, streamId);  // #4416: terminal path, drop hidden tracker
+    _clearStreamNotificationBackground(activeSid, streamId);
     _flushReasoningToAnchor();
     _scheduleAnchorRegistryCleanup();
     _clearApprovalForOwner();
@@ -2791,6 +2831,94 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     },null);
     return _findAnchorActivityEventByLocalId(localId,'reasoning');
   }
+  function _compactVisibleEchoText(value){
+    return String(value||'').replace(/\s+/g,'');
+  }
+  function _stripCompactEchoSuffix(value, suffix){
+    const raw=String(value||'');
+    const candidate=_compactVisibleEchoText(suffix);
+    if(!raw||!candidate) return {text:raw,removed:false};
+    const windowSize=Math.max(String(suffix||'').length*3,4096);
+    const offset=Math.max(0,raw.length-windowSize);
+    const tail=raw.slice(offset);
+    for(let idx=0;idx<=tail.length;idx+=1){
+      if(_compactVisibleEchoText(tail.slice(idx))===candidate){
+        return {text:raw.slice(0,offset+idx).trimEnd(),removed:true};
+      }
+    }
+    return {text:raw,removed:false};
+  }
+  function _stripAnchorReasoningEcho(visible){
+    const events=_anchorActivityEvents();
+    if(!events||!visible) return false;
+    for(let i=events.length-1;i>=0;i-=1){
+      const event=events[i];
+      if(!event||event.source_event_type!=='reasoning') continue;
+      const payload=(event.payload&&typeof event.payload==='object')?event.payload:{};
+      const rawText=String(payload.text||payload.reasoning||payload.thinking||'');
+      const stripped=_stripCompactEchoSuffix(rawText, visible);
+      if(!stripped.removed) continue;
+      const nextText=String(stripped.text||'').trim();
+      if(nextText){
+        _replaceAnchorActivityEventByLocalId(event.local_id,'reasoning',{
+          payload:{text:nextText},
+        });
+      }else{
+        events.splice(i,1);
+      }
+      _renderAnchorLiveScene();
+      return true;
+    }
+    return false;
+  }
+  function _removeLiveReasoningEchoRows(visible){
+    const turn=$('liveAssistantTurn');
+    const blocks=turn&&typeof _assistantTurnBlocks==='function'?_assistantTurnBlocks(turn):null;
+    if(!blocks||!visible) return false;
+    let removed=false;
+    const selector=[
+      '.agent-activity-thinking[data-anchor-scene-row="1"]',
+      '.agent-activity-thinking[data-live-thinking="1"]',
+      '.wl-reason[data-worklog-anchor-reason="1"]',
+      '.wl-reason[data-worklog-reason-source="reasoning"]'
+    ].join(',');
+    blocks.querySelectorAll(selector).forEach(row=>{
+      const textNode=row.querySelector&&(
+        row.querySelector('.thinking-card-body pre') ||
+        row.querySelector('.thinking-card-body')
+      );
+      const text=String((textNode&&textNode.textContent)||row.textContent||'');
+      if(!_stripCompactEchoSuffix(text, visible).removed) return;
+      row.remove();
+      removed=true;
+    });
+    if(removed&&typeof _syncToolCallGroupSummary==='function'){
+      blocks.querySelectorAll('.tool-worklog-group,.tool-call-group').forEach(group=>{
+        _syncToolCallGroupSummary(group);
+      });
+    }
+    return removed;
+  }
+  function _stripLiveReasoningEcho(visible){
+    let removed=false;
+    const durable=_stripCompactEchoSuffix(reasoningText, visible);
+    if(durable.removed){
+      reasoningText=durable.text;
+      removed=true;
+    }
+    const live=_stripCompactEchoSuffix(liveReasoningText, visible);
+    if(live.removed){
+      liveReasoningText=live.text;
+      removed=true;
+    }
+    const anchorRemoved=_stripAnchorReasoningEcho(visible);
+    const domRemoved=_removeLiveReasoningEchoRows(visible);
+    if(removed) syncInflightAssistantMessage();
+    if((removed||anchorRemoved||domRemoved)&&!String(liveReasoningText||'').trim()&&typeof removeThinking==='function'){
+      removeThinking();
+    }
+    return removed||anchorRemoved||domRemoved;
+  }
   function _flushReasoningToAnchor(){
     if(_anchorReasoningFlushed||!reasoningText) return;
     _anchorReasoningFlushed=true;
@@ -2942,7 +3070,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _smdWrittenLen=0;
     _smdWrittenText='';
     if(!window.smd){_smdParser=null;return;}
-    const baseRenderer=fade ? _streamFadeRenderer(el) : window.smd.default_renderer(el);
+    const baseRenderer=fade ? _streamFadeRenderer(el) : _safeSmdRenderer(el);
     const renderer=_smdRendererWithoutUnderscoreEmphasis(baseRenderer);
     _smdParser=window.smd.parser(renderer);
   }
@@ -3013,9 +3141,9 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     try{window.smd.parser_write(_smdParser,delta);}catch(_){}
     _smdWrittenLen=displayText.length;
     _smdWrittenText=displayText;
-    // streaming-markdown does NOT sanitize URL schemes. The default live path
-    // scans after writes; fade mode blocks unsafe href/src in its renderer.set_attr.
-    if(assistantBody&&!fade){_sanitizeSmdLinks(assistantBody);}
+    // URL scheme safety is handled by the renderer's set_attr hook
+    // (_safeSmdRenderer or _streamFadeRenderer), applied inline as smd
+    // creates each DOM node — no post-hoc full-DOM scan needed.
     _scheduleStreamingKatex();
   }
   // Allowed URL schemes for anchors and images rendered from agent-streamed markdown.
@@ -3165,6 +3293,36 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       if(last<value.length) frag.appendChild(document.createTextNode(value.slice(last)));
       parent.appendChild(frag);
     };
+    renderer.set_attr=(data,attr,value)=>{
+      const isHref=window.smd&&attr===window.smd.HREF;
+      const isSrc=window.smd&&attr===window.smd.SRC;
+      const safeUrl=isSrc?_SMD_SAFE_IMG_URL_RE:_SMD_SAFE_URL_RE;
+      if(isHref&&/^(file|workspace|session):\/\//i.test(String(value||''))){
+        baseSetAttr(data,attr,_smdLinkHref(value));
+        if(/^session:\/\//i.test(String(value||''))){
+          const node=data&&data.nodes&&data.nodes[data.index];
+          if(node&&node.classList) node.classList.add('session-link');
+        }
+        return;
+      }
+      if((isHref||isSrc)&&!safeUrl.test(String(value||''))){
+        const node=data&&data.nodes&&data.nodes[data.index];
+        if(node&&node.setAttribute) node.setAttribute('data-blocked-scheme','1');
+        return;
+      }
+      baseSetAttr(data,attr,value);
+    };
+    return renderer;
+  }
+  // Safe renderer: wraps default_renderer with a set_attr hook that validates
+  // href/src URL schemes inline — no post-hoc DOM-wide querySelectorAll needed.
+  // Unlike _streamFadeRenderer, this does NOT wrap add_text, so smd adds new
+  // DOM nodes as plain text nodes (no animation spans). Used on the non-fade
+  // streaming path to eliminate _sanitizeSmdLinks(assistantBody) O(DOM) scans
+  // on every token event (#WebUI-perf).
+  function _safeSmdRenderer(el){
+    const renderer=window.smd.default_renderer(el);
+    const baseSetAttr=renderer.set_attr;
     renderer.set_attr=(data,attr,value)=>{
       const isHref=window.smd&&attr===window.smd.HREF;
       const isSrc=window.smd&&attr===window.smd.SRC;
@@ -3345,6 +3503,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   }
   function _flushPendingSegmentRender(options={}){
     const force=!!(options&&options.force);
+    const skipAnchorProcessProse=!!(options&&options.skipAnchorProcessProse);
     if(!assistantBody||(!force&&!_renderPending)) return;
     if(_renderPending) _cancelAnimationFramePendingStreamRender();
     const displayText=segmentStart===0
@@ -3369,7 +3528,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     } else {
       assistantBody.innerHTML=esc(displayText);
     }
-    _upsertAnchorProcessProse(displayText,{sealed:force});
+    if(!skipAnchorProcessProse) _upsertAnchorProcessProse(displayText,{sealed:force});
     if(typeof _syncLiveWorklogReasonsForAnchor==='function') _syncLiveWorklogReasonsForAnchor(assistantRow, displayText);
   }
   function _resetAssistantSegment(){
@@ -3655,7 +3814,19 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   }
 
   let _lastRenderMs=0;
-  function _scheduleRender(){
+  // Parse-result cache: _scheduleRender can accept a pre-computed _parseStreamState()
+  // from the token event handler, avoiding a duplicate O(n) scan inside _doRender
+  // when the rAF fires before the next token arrives.
+  let _cachedParsed=null;
+  let _cachedParsedText='';
+  let _cachedParsedReasoning='';
+  function _scheduleRender(parsed){
+    // If caller provides a pre-computed parse result, cache it for _doRender.
+    if(parsed){
+      _cachedParsed=parsed;
+      _cachedParsedText=assistantText;
+      _cachedParsedReasoning=liveReasoningText;
+    }
     if(_renderPending) return;
     if(_streamFinalized) return; // Bug A: don't schedule new rAF after stream finalized
     _renderPending=true;
@@ -3674,7 +3845,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       // Guard: a pending setTimeout+rAF can outlive stream finalization.
       if(_streamFinalized) return;
       _lastRenderMs=performance.now();
-      const parsed=_parseStreamState();
+      const parsed=_cachedParsed&&_cachedParsedText===assistantText&&_cachedParsedReasoning===liveReasoningText ? _cachedParsed : _parseStreamState();
+      _cachedParsed=null;
       _renderLiveThinking(parsed);
       if(assistantBody){
         const displayText = segmentStart===0
@@ -3769,7 +3941,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const parsed=_parseStreamState();
       if(_freshSegment) appendThinking('', _liveThinkingPlacement());
       if(String((parsed&&parsed.displayText)||'').trim()||assistantRow) ensureAssistantRow();
-      _scheduleRender();
+      _scheduleRender(parsed);
     });
 
     source.addEventListener('interim_assistant',e=>{
@@ -3777,9 +3949,11 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       const d=JSON.parse(e.data);
       const visible=String(d&&d.text?d.text:'').trim();
       const alreadyStreamed=!!(d&&d.already_streamed);
+      const reasoningEcho=!!(d&&d.reasoning_echo);
       if(!visible){
         return;
       }
+      if(reasoningEcho) _stripLiveReasoningEcho(visible);
       liveReasoningText='';
       if(alreadyStreamed){
         if(!S.session||S.session.session_id!==activeSid){
@@ -3799,7 +3973,6 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         _resetAssistantSegment();
         return;
       }
-      _applyToAnchor('interim_assistant',d,e);
       assistantText += assistantText ? `\n\n${visible}` : visible;
       visibleInterimSnippets.push(visible);
       syncInflightAssistantMessage();
@@ -3811,9 +3984,10 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       _completeAutomaticCompressionOnLiveProgress(activeSid);
       ensureAssistantRow(true);
       if(assistantRow) assistantRow.setAttribute('data-interim','1');
-      _flushPendingSegmentRender({force:true});
+      _flushPendingSegmentRender({force:true,skipAnchorProcessProse:true});
       if(typeof finalizeThinkingCard==='function') finalizeThinkingCard();
       if(typeof closeCurrentLiveActivityGroup==='function') closeCurrentLiveActivityGroup();
+      _applyToAnchor('interim_assistant',d,e);
       // Collapse old interim notes once more than INTERIM_COLLAPSE_THRESHOLD accumulate.
       const INTERIM_COLLAPSE_THRESHOLD=3;
       if(visibleInterimSnippets.length>INTERIM_COLLAPSE_THRESHOLD&&assistantRow){
@@ -4353,10 +4527,8 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         // delivers late — after the user returns and document.hidden is false).
         // If the user watched the whole stream, _wasEverHidden stays false and
         // the notification is suppressed (matches Slack/Discord/Gmail/Claude).
-        const _hiddenEntry=_STREAM_WAS_HIDDEN[activeSid];
-        const _wasEverHidden=!!(_hiddenEntry&&_hiddenEntry.wasHidden);
-        _clearStreamHidden(activeSid, streamId);
-        sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished',{forceHidden:_wasEverHidden,sid:activeSid});
+        const _wasEverBackgrounded=_shouldForceCompletionNotification(activeSid, streamId);
+        sendBrowserNotification('Response complete',assistantText?assistantText.slice(0,100):'Task finished',{forceHidden:_wasEverBackgrounded,sid:activeSid});
       };
       if(_shouldUseStreamFade()&&assistantBody){
         _cancelAnimationFramePendingStreamRender();
@@ -4522,6 +4694,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       try{if(source&&source.readyState!==2)source.close();}catch(_){ }
       _clearOwnerInflightState();
       _clearStreamHidden(activeSid, streamId);  // #4416: terminal path, drop hidden tracker
+      _clearStreamNotificationBackground(activeSid, streamId);
       _clearApprovalForOwner();
       _clearClarifyForOwner('terminal');
       let d={};
@@ -4699,6 +4872,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
       try{if(source&&source.readyState!==2)source.close();}catch(_){ }
       _clearOwnerInflightState();
       _clearStreamHidden(activeSid, streamId);  // #4416: terminal path, drop hidden tracker
+      _clearStreamNotificationBackground(activeSid, streamId);
       _clearApprovalForOwner();
       _clearClarifyForOwner('cancelled');
       let _cancelData={};
@@ -6246,7 +6420,7 @@ function sendBrowserNotification(title,body,options={}){
   // explicit "Send test" override); only the visibility gate is bypassed.
   const forceHidden=!!(options&&options.forceHidden);
   if(!force&&!window._notificationsEnabled) return;
-  if(!force&&!forceHidden&&!document.hidden) return;
+  if(!force&&!forceHidden&&!_isBackgroundedForBrowserNotification()) return;
   if(!('Notification' in window)) return;
   if(Notification.permission==='granted'){
     _showPwaNotification(title,body,options).catch(()=>{try{new Notification(title||assistantDisplayName(),_notificationOptions(body,options));}catch(_err){}});
