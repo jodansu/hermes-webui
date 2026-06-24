@@ -3,6 +3,24 @@
 
 ## [Unreleased]
 
+## [v0.51.620] — 2026-06-24 — Release WA (fix /api/sessions CPU spike + slowness during streaming)
+
+### Fixed
+
+- **The conversation sidebar (`/api/sessions`) no longer pins CPU to 100% and lags 2+ seconds while a turn is streaming, which had been dragging down token rendering.** The frontend polls `/api/sessions` every 5 seconds while a response streams, but the response cache expired after 2.5 seconds — so every poll missed the cache and forced a full rebuild of the whole session list on the hot path, contending the global store lock the streaming worker holds (a recurrence of #4672, which worsened as a store grew past a few thousand sessions). While a turn is actively streaming, the sidebar cache now holds steady for longer than one poll interval, so it is built at most once per window instead of once per poll. Live state (active stream, sort order, pending flags) is still overlaid on every response, and any structural or settings change still refreshes the sidebar immediately — only a streaming session's own persisted title/message-count can lag briefly, which resolves the moment the turn ends. (#4808)
+
+## [v0.51.619] — 2026-06-24 — Release VZ (stop final-answer text leaking into the Worklog as reasoning)
+
+### Fixed
+
+- **Final answers no longer duplicate into the Compact Worklog as reasoning when a runtime mirrors already-streamed answer text through the reasoning callback.** WebUI now suppresses substantial reasoning chunks that are already present in the visible assistant stream before they reach live SSE or the run journal, while preserving genuine reasoning and short progress-tail echo handling. This keeps live rendering, journal replay, and settled session reloads from showing Final Answer prose inside Worklog/Thinking. Thanks @franksong2702. (#4827)
+
+## [v0.51.618] — 2026-06-24 — Release VY (preserve processed Worklog duration after session merge)
+
+### Fixed
+
+- **Settled Compact Worklog summaries keep their processed duration after session recovery or lineage merge.** When WebUI deduped duplicate assistant rows from the sidecar, state.db, or parent lineage, it could keep the copy without display-only turn metadata and drop the copy that carried `_turnDuration` / anchor scene metadata. Duplicate merges now backfill missing display metadata before discarding the duplicate, so the settled Processed Worklog can still show elapsed time. Thanks @franksong2702. (#4809)
+
 ## [v0.51.617] — 2026-06-24 — Release VX (fix mobile scroll-jank to top during streaming)
 
 ### Fixed
