@@ -3,6 +3,36 @@
 
 ## [Unreleased]
 
+## [v0.51.625] — 2026-06-24 — Release WF (cron job model override no longer keeps the @provider: display prefix)
+
+### Fixed
+
+- **Creating or editing a cron job no longer saves the model with its `@provider:` display prefix.** The model dropdown shows prefixed values like `@custom:9router:chat` (so the same model name across providers stays distinct), but cron jobs persist `model` and `provider` separately — the prefixed value was being saved as the model, breaking the cron run's model override. The saved model is now the bare name (e.g. `9router:chat`) when it carries the selected provider's prefix. Thanks @luandnh. (#4813)
+
+## [v0.51.624] — 2026-06-24 — Release WE (bound the Kanban column card-list height)
+
+### Fixed
+
+- **Kanban columns with many cards no longer grow unbounded and stretch the board.** The column card list is now capped at `min(68vh, 720px)` and scrolls internally (contained overscroll + stable scrollbar gutter), so a busy column stays a fixed height instead of pushing the whole Tasks board layout. Thanks @jkobject. (#4832)
+
+## [v0.51.623] — 2026-06-24 — Release WD (iOS portrait: opening a conversation lands at the bottom)
+
+### Fixed
+
+- **On iOS Safari in portrait, opening or switching a conversation no longer jumps to the top of the transcript.** iOS resolves its dynamic toolbar height after first paint; when the toolbar collapsed, the message scroller grew and fired a scroll event with a decreased `scrollTop` that the WebUI misread as the user scrolling up — so it unpinned the freshly-opened session and the late re-anchor settle then cancelled itself, stranding the reader at the oldest message (landscape was unaffected because it doesn't resize late). The scroll tracker now distinguishes a container-height increase (toolbar/keyboard reflow) from a real upward scroll, and an open-time settle also re-anchors the bottom after the late portrait viewport change. Desktop and landscape behavior is unchanged. Also addresses the sibling symptom in #4701. (#4702)
+
+## [v0.51.622] — 2026-06-24 — Release WC (Tasks tab no longer 500s when the cron package is absent)
+
+### Fixed
+
+- **The Tasks tab no longer errors out in deployments where the cron package isn't on the WebUI's import path.** In split-container / minimal Docker setups (e.g. separate agent and WebUI containers), `GET /api/crons` did an unguarded `from cron.jobs import list_jobs` and returned a 500 (`ModuleNotFoundError: No module named 'cron.jobs'`), breaking the whole Tasks tab. The endpoint now degrades gracefully — returning an empty job list with a `cron_unavailable` flag — when the cron package is genuinely absent, while still surfacing a real import error if an installed `cron/jobs.py` fails to load one of its own dependencies. (#4768)
+
+## [v0.51.621] — 2026-06-24 — Release WB (Vietnamese UI language)
+
+### Added
+
+- **Vietnamese (Tiếng Việt) is now a selectable UI language.** Adds a full `vi` locale to the language picker, including the login page. Thanks @thanhtantran. (#4241)
+
 ## [v0.51.620] — 2026-06-24 — Release WA (fix /api/sessions CPU spike + slowness during streaming)
 
 ### Fixed
