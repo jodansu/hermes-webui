@@ -3,6 +3,24 @@
 
 ## [Unreleased]
 
+## [v0.51.617] — 2026-06-24 — Release VX (fix mobile scroll-jank to top during streaming)
+
+### Fixed
+
+- **On mobile (iOS Safari / Android Chrome), the transcript no longer randomly jumps to the top while the assistant is streaming.** The message container carried a global `overflow-anchor: none` (needed for desktop virtual-scroll position stability), but on touch browsers that made the browser paint a frame at `scrollTop=0` during the render's DOM wipe-and-rebuild, scroll-janking the reader to the oldest message mid-stream. `overflow-anchor: none` is now scoped to desktop (hover + fine-pointer) via a media query — mobile keeps the browser's native scroll anchoring — and the render briefly re-enables anchoring on touch devices across the DOM-rebuild gap. Desktop behavior is unchanged. Thanks @akrhin. (#4815, #4818)
+
+## [v0.51.616] — 2026-06-24 — Release VW (harden recycled assistant turns + scrollbar-drag detection)
+
+### Fixed
+
+- **Recycled message DOM nodes can no longer leak live-stream ownership state, and scrollbar-drag detection is more precise.** Follow-up hardening on the virtual-scroll DOM recycling (#4346): when a turn node is recycled it now also clears the live-stream owner attributes (`data-anchor-scene-live-owner`, `data-anchor-stream-id`, `data-live-assistant-turn`) so a reused node can never carry stale stream state into a new turn, and the scrollbar-drag heuristic now requires the pointer event target to actually be the messages container before treating an edge click as a scrollbar drag (preventing a wide child near the right edge from spuriously suppressing a real user scroll). Thanks @rodboev. (#4793)
+
+## [v0.51.615] — 2026-06-24 — Release VV (refresh stale model catalogs on session visit)
+
+### Fixed
+
+- **The model picker no longer serves a stale catalog after a profile has been idle.** Visiting a session now triggers a bounded freshness check on the model catalog: if the profile-scoped cache is old enough, it is rebuilt in the background; otherwise it is reused, so session loads stay fast. The refresh is a non-boot event, so it preserves the active session's selected model (and any in-page selection) instead of re-applying the boot/profile default — and a refresh build stays authoritative until its disk save completes, so a concurrent manual Providers refresh can't serve a half-built catalog. Opt-in per session visit; no change to boot or `prefer_cache` behavior for anyone not on this path. Thanks @rodboev. (#4756)
+
 ## [v0.51.614] — 2026-06-23 — Release VU (Kanban consolidated view toggle)
 
 ### Added

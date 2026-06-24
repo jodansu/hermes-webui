@@ -438,6 +438,14 @@ let _messageVirtualScrollSettleTimer=0;
 let _messageVirtualDeferredMeasurement=null;
 let _msgNodeRecycleEnabled=false;
 const _recycleStash=new Map();
+const _recycleResetAttrs=[
+  'data-transparent-turn-collapsed',
+  'data-transparent-turn-toggle-bound',
+  'data-anchor-scene-live-owner',
+  'data-anchor-stream-id',
+  // Defensive reset for legacy/restored shells that may still carry the fallback live-turn marker.
+  'data-live-assistant-turn',
+];
 let _scrollbarDragActive=false;
 function _markMessageVirtualScrollActive(){
   _messageVirtualScrollActive=true;
@@ -2008,6 +2016,8 @@ function _persistSessionModelCorrection(model, provider, opts){
   });
   return opts&&opts.propagateErrors ? request : request.catch(()=>{});
 }
+let _modelDropdownRequestSeq=0;
+
 function _applySessionModelFallback(sel){
   if(!sel) return null;
   const configuredDefault=String(window._defaultModel||'').trim();
@@ -2030,10 +2040,16 @@ function _applySessionModelFallback(sel){
 async function populateModelDropdown(opts={}){
   const sel=$('modelSelect');
   if(!sel) return;
+  if(typeof _modelDropdownRequestSeq!=='number') _modelDropdownRequestSeq=0;
+  const requestSeq=++_modelDropdownRequestSeq;
   try{
-    const _modelsRes=await fetch(new URL('api/models',document.baseURI||location.href).href,{credentials:'include'});
+    const modelsUrl=new URL('api/models',document.baseURI||location.href);
+    if(opts&&opts.freshness) modelsUrl.searchParams.set('freshness',opts.freshness);
+    const _modelsRes=await fetch(modelsUrl.href,{credentials:'include'});
+    if(requestSeq!==_modelDropdownRequestSeq) return;
     if(_redirectIfUnauth(_modelsRes)) return;
     const data=await _modelsRes.json();
+    if(requestSeq!==_modelDropdownRequestSeq) return;
     // Store active provider globally so the send path can warn on mismatch
     window._activeProvider=data.active_provider||null;
     // Store default model so newSession() can apply it (#872).
@@ -2128,8 +2144,9 @@ async function populateModelDropdown(opts={}){
     }
     // Kick off a background live-model fetch for the active provider.
     // This runs after the static list is already shown (no blocking flicker).
-    if(data.active_provider) _fetchLiveModels(data.active_provider, sel);
+    if(data.active_provider) _fetchLiveModels(data.active_provider, sel, requestSeq);
   }catch(e){
+    if(requestSeq!==_modelDropdownRequestSeq) return;
     // API unavailable -- keep the hardcoded HTML options as fallback
     console.warn('Failed to load models from server:',e.message);
     if(typeof syncModelChip==='function') syncModelChip();
@@ -2219,10 +2236,12 @@ function _addLiveModelsToSelect(provider, models, sel){
   return added;
 }
 
-async function _fetchLiveModels(provider, sel){
+async function _fetchLiveModels(provider, sel, requestSeq=null){
   if(!provider||!sel) return;
+  if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
   // Already fetched — apply cached models to this select element (#872)
   if(_liveModelCache[provider]){
+    if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     const added=_addLiveModelsToSelect(provider,_liveModelCache[provider],sel);
     if(added>0 && typeof syncModelChip==='function') syncModelChip();
     return;
@@ -2232,10 +2251,13 @@ async function _fetchLiveModels(provider, sel){
     const url=new URL('api/models/live',document.baseURI||location.href);
     url.searchParams.set('provider',provider);
     const _liveRes=await fetch(url.href,{credentials:'include'});
+    if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     if(_redirectIfUnauth(_liveRes)) return;
     const data=await _liveRes.json();
+    if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     if(!data.models||!data.models.length) return;
     _liveModelCache[provider]=data.models;
+    if(requestSeq!==null&&requestSeq!==_modelDropdownRequestSeq) return;
     const added=_addLiveModelsToSelect(provider,data.models,sel);
     if(added>0){
       if(typeof syncModelChip==='function') syncModelChip();
@@ -3918,7 +3940,7 @@ if(typeof window!=='undefined'){
   const el=document.getElementById('messages');
   if(!el) return;
   el.addEventListener('pointerdown',(e)=>{
-    if(e.offsetX>=el.clientWidth) _scrollbarDragActive=true;
+    if(e.target===el&&e.offsetX>=el.clientWidth) _scrollbarDragActive=true;
   },{passive:true});
   window.addEventListener('pointerup',()=>{
     if(!_scrollbarDragActive) return;
@@ -10988,6 +11010,26 @@ function _restoreMessageScrollSnapshot(snapshot){
     else requestAnimationFrame(()=>{ setTimeout(()=>{ _programmaticScroll=false; },0); });
   }
 }
+/**
+ * Mobile scroll-jank guard: temporarily re-enable overflow-anchor so the
+ * browser preserves scroll position across the innerHTML='' + DOM rebuild gap.
+ * Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
+ * innerHTML='' and snapshot restore, scroll-janking the user to the top.
+ * Called from renderMessages() before the DOM wipe — not from streaming ticks,
+ * since CSS already gives overflow-anchor:auto on mobile via media query.
+ */
+window._fixMobileScrollJank=function _fixMobileScrollJank(){
+  const el=document.getElementById('messages');
+  if(!el) return;
+  // Desktop with a mouse: keep overflow-anchor:none (explicitly set by CSS).
+  // Mobile touch devices only: temporarily enable it.
+  if(window.matchMedia('(hover:hover) and (pointer:fine)').matches) return;
+  el.style.overflowAnchor='auto';
+  requestAnimationFrame(()=>{
+    if(el.style.overflowAnchor==='auto') el.style.overflowAnchor='';
+  });
+};
+
 function _restoreMessageScrollSnapshotSameFrame(snapshot){
   const el=$('messages');
   if(!el||!snapshot) return;
@@ -11222,6 +11264,11 @@ function renderMessages(options){
       _recycleStash.set(Number(key), child);
     }
   }
+  // Mobile scroll-jank fix: temporarily re-enable overflow-anchor so browser
+  // preserves scroll position across the DOM wipe-and-rebuild gap.
+  // Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
+  // innerHTML='' and snapshot restore, scroll-janking the user to the top.
+  if(window._fixMobileScrollJank) window._fixMobileScrollJank();
   inner.innerHTML='';
   const compressionNode=compressionState?_compressionCardsNode(compressionState):null;
   const {message:referenceMessage, rawIdx:referenceMessageRawIdx}=_latestCompressionReferenceMessage(
@@ -11526,8 +11573,7 @@ function renderMessages(options){
       if(recycled){
         const blocks=_assistantTurnBlocks(recycled);
         if(blocks) blocks.innerHTML='';
-        recycled.removeAttribute('data-transparent-turn-collapsed');
-        recycled.removeAttribute('data-transparent-turn-toggle-bound');
+        for(const attr of _recycleResetAttrs) recycled.removeAttribute(attr);
         const role=recycled.querySelector('.msg-role.assistant');
         if(role) role.outerHTML=_assistantRoleHtml(tsTitle, isTpsDisplayEnabled()?_formatTurnTps(m._turnTps):'');
         currentAssistantTurn=recycled;
