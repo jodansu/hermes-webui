@@ -5177,7 +5177,7 @@ function renderMd(raw){
     // Bracket set is paren / square / curly only -- NOT angle brackets, since
     // angle brackets are overwhelmingly comparison operators in real LLM table
     // output (`| x < 5 | y > 10 |`) and treating them as a pair collapses cells.
-    const _protectPipes=r=>{let prev;do{prev=r;r=r.replace(/([([\x7b][^)\]\x7d]*)[|]([^)\]\x7d]*[)\]\x7d])/g,(_,a,b)=>a+'\x00PIPE\x00'+b);}while(r!==prev);return r;};
+    const _protectPipes=r=>{let prev;do{prev=r;r=r.replace(/([([\x7b][^)\]\x7d]*)[|]([^)\]\x7d]*[)\]\x7d])/g,(_,a,b)=>a+'\x00PIPE\x00'+b);r=r.replace(/(<code>[^<]*)[|]([^<]*<\/code>)/g,(_,a,b)=>a+'\x00PIPE\x00'+b);}while(r!==prev);return r;};
     const _restorePipes=s=>s.replace(/\x00PIPE\x00/g,'|');
     const parseRow=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<td>${inlineMd(_restorePipes(c.trim()))}</td>`).join('');};
     const parseHeader=r=>{r=_protectPipes(r);return r.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>`<th>${inlineMd(_restorePipes(c.trim()))}</th>`).join('');};
@@ -7981,8 +7981,8 @@ function _isRecoveryControlMessageText(text){
   const normalized=String(text||'').replace(/\s+/g,' ').trim();
   if(!normalized) return false;
   const systemRecovery=/^\[System:/i.test(normalized)
-    && /previous response was cut off by a network error/i.test(normalized)
-    && /continue exactly where you left off/i.test(normalized);
+    && (/continue exactly where you left off/i.test(normalized)
+      || /do not retry the same tool call/i.test(normalized));
   const backendRecovery=/^the live worker stopped before this run finished\.?$/i.test(normalized);
   return !!(systemRecovery || backendRecovery);
 }
@@ -11029,22 +11029,19 @@ function _restoreMessageScrollSnapshot(snapshot){
   }
 }
 /**
- * Mobile scroll-jank guard: temporarily re-enable overflow-anchor so the
- * browser preserves scroll position across the innerHTML='' + DOM rebuild gap.
- * Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
- * innerHTML='' and snapshot restore, scroll-janking the user to the top.
- * Called from renderMessages() before the DOM wipe — not from streaming ticks,
- * since CSS already gives overflow-anchor:auto on mobile via media query.
+ * Mobile scroll-jank guard: temporarily disable overflow-anchor so
+ * Chromium cannot re-anchor to the topmost row during the innerHTML=''
+ * wipe-and-rebuild gap. The rAF callback restores CSS default afterward.
  */
 window._fixMobileScrollJank=function _fixMobileScrollJank(){
   const el=document.getElementById('messages');
   if(!el) return;
   // Desktop with a mouse: keep overflow-anchor:none (explicitly set by CSS).
-  // Mobile touch devices only: temporarily enable it.
+  // Mobile touch devices only: temporarily suppress anchor re-selection.
   if(window.matchMedia('(hover:hover) and (pointer:fine)').matches) return;
-  el.style.overflowAnchor='auto';
+  el.style.overflowAnchor='none';
   requestAnimationFrame(()=>{
-    if(el.style.overflowAnchor==='auto') el.style.overflowAnchor='';
+    if(el.style.overflowAnchor==='none') el.style.overflowAnchor='';
   });
 };
 
@@ -11282,10 +11279,8 @@ function renderMessages(options){
       _recycleStash.set(Number(key), child);
     }
   }
-  // Mobile scroll-jank fix: temporarily re-enable overflow-anchor so browser
-  // preserves scroll position across the DOM wipe-and-rebuild gap.
-  // Safari/Chrome on iOS/Android can paint a frame with scrollTop=0 between
-  // innerHTML='' and snapshot restore, scroll-janking the user to the top.
+  // Mobile scroll-jank fix: temporarily disable overflow-anchor so Chromium
+  // cannot re-anchor to the topmost row during the DOM wipe-and-rebuild gap.
   if(window._fixMobileScrollJank) window._fixMobileScrollJank();
   inner.innerHTML='';
   const compressionNode=compressionState?_compressionCardsNode(compressionState):null;
