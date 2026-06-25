@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识库</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#0a0e1a;color:#c8cdd8;min-height:100vh}
+.container{max-width:720px;margin:0 auto;padding:40px 20px}
+h1{font-size:1.4em;color:#e2e8f0;margin-bottom:4px}
+.sub{font-size:13px;color:#64748b;margin-bottom:20px}
+.tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:1px solid #1e293b}
+.tab{padding:10px 20px;font-size:14px;cursor:pointer;color:#64748b;border:none;background:none;border-bottom:2px solid transparent}
+.tab.active{color:#60a5fa;border-bottom-color:#3b82f6}
+.panel{display:none}
+.panel.active{display:block}
+.search-box{display:flex;gap:8px;margin-bottom:12px}
+.search-box input{flex:1;padding:12px 16px;background:#1e293b;border:1px solid #334155;border-radius:8px;color:#e2e8f0;font-size:15px;outline:none}
+.search-box input:focus{border-color:#3b82f6}
+.btn{padding:12px 20px;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer;font-weight:600}
+.btn-sm{padding:6px 14px;font-size:12px;border-radius:6px}
+.btn-green{background:#16a34a}
+.result{margin-bottom:14px;padding:14px 16px;background:#0f1525;border-radius:8px;border-left:3px solid #1e293b}
+.result.wiki{border-left-color:#22c55e}
+.result .meta{font-size:12px;color:#64748b;margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.result .meta .source{color:#60a5fa;font-weight:600}
+.result .wiki-badge{background:#166534;color:#4ade80;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.result .preview{font-size:14px;color:#94a3b8;line-height:1.7}
+#scount{font-size:13px;color:#64748b;margin-bottom:16px}
+.upload-zone{border:2px dashed #334155;border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:16px}
+.upload-zone:hover{border-color:#3b82f6;background:#0f1525}
+.upload-zone svg{margin-bottom:12px;opacity:.5}
+.upload-zone .hint{font-size:15px;color:#94a3b8}
+.upload-zone .hint2{font-size:12px;color:#64748b;margin-top:6px}
+#uploadStatus{font-size:13px;color:#94a3b8;margin-bottom:12px;line-height:1.8}
+.history-item{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #0f1525;font-size:14px}
+.history-item .icon{font-size:16px;flex-shrink:0}
+.history-item .name{flex:1;color:#c8cdd8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.history-item .chunks{color:#64748b;font-size:12px;white-space:nowrap}
+.history-item .time{color:#475569;font-size:12px;white-space:nowrap}
+.history-item .wiki-btn{padding:4px 10px;background:#166534;color:#4ade80;border:none;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap}
+.history-item .wiki-btn:hover{background:#15803d}
+.pagination{display:flex;justify-content:center;gap:8px;margin-top:20px}
+.pagination button{padding:8px 14px;background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;font-size:13px;cursor:pointer}
+.pagination button.active{background:#3b82f6;color:#fff;border-color:#3b82f6}
+.pagination button:disabled{opacity:.4;cursor:default}
+#hloading,#sloading,#sempty{text-align:center;padding:40px;color:#64748b;font-size:14px}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>📚 知识库</h1>
+<p class="sub" id="statusLine">加载中...</p>
+
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('search')">🔍 搜索</button>
+  <button class="tab" onclick="switchTab('upload')">📤 上传</button>
+  <button class="tab" onclick="switchTab('history')">📥 记录</button>
+</div>
+
+<div class="panel active" id="panelSearch">
+  <div class="search-box">
+    <input id="q" type="text" placeholder="输入关键词搜索..." onkeydown="if(event.key==='Enter')doSearch()">
+    <button class="btn" onclick="doSearch()">搜索</button>
+  </div>
+  <div id="scount"></div>
+  <div id="sresults"><div id="sempty">输入关键词开始搜索</div></div>
+</div>
+
+<div class="panel" id="panelUpload">
+  <div class="upload-zone" onclick="document.getElementById('fileInput').click()">
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+    <div class="hint">点击或拖拽文件到此处</div>
+    <div class="hint2">支持 .docx .pdf .md .txt .html</div>
+  </div>
+  <input type="file" id="fileInput" style="display:none" accept=".docx,.pdf,.md,.txt,.html" multiple onchange="doUpload(this.files)">
+  <div id="uploadStatus"></div>
+</div>
+
+<div class="panel" id="panelHistory">
+  <div id="hresults"><div id="hloading">加载中...</div></div>
+  <div class="pagination" id="pagination"></div>
+</div>
+</div>
+
+<script>
+var BASE='http://192.168.40.5:8792';
+var allHistory=[], histPage=1, HIST_PER=50;
+
+// Tabs
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(function(t){
+    var txt=t.textContent.trim();
+    t.classList.toggle('active',(name==='search'&&txt.includes('搜索'))||(name==='upload'&&txt.includes('上传'))||(name==='history'&&txt.includes('记录')));
+  });
+  document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});
+  document.getElementById('panel'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  if(name==='history'){histPage=1;loadHistory()}
+}
+
+fetch(BASE+'/status').then(function(r){return r.json()}).then(function(d){
+  document.getElementById('statusLine').textContent=d.total_chunks+' 个文本块';
+});
+
+// Search
+function doSearch(){
+  var q=document.getElementById('q').value.trim();if(!q)return;
+  document.getElementById('sresults').innerHTML='<div id="sloading">搜索中...</div>';
+  document.getElementById('scount').textContent='';
+  fetch(BASE+'/search?q='+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(d){
+    document.getElementById('scount').textContent=(d.results||[]).length+' 条结果';
+    if(!d.results||!d.results.length){document.getElementById('sresults').innerHTML='<div id="sempty">未找到相关内容</div>';return}
+    var html='';
+    d.results.forEach(function(r){
+      var wikiLink='',cls='',badge='';
+      if(r.isWiki){cls=' wiki';badge=' <span class="wiki-badge">WIKI</span>'}
+      var src=r.source||'';
+      var wikiMap=[
+        {prefix:'Guozi-Wiki/', page:'/static/guozi-wiki.html?page='},
+        {prefix:'Yixue-Wiki/', page:'/static/yixue-wiki.html?page='},
+        {prefix:'AI-LLM-Wiki/', page:'/static/ai-llm-wiki.html?page='},
+        {prefix:'Hermes-Wiki/', page:'/static/wiki-v2.html?page='}
+      ];
+      for(var w=0;w<wikiMap.length;w++){
+        var idx=src.indexOf(wikiMap[w].prefix);
+        if(idx!==-1){
+          var rel=src.substring(idx+wikiMap[w].prefix.length).replace(/\.md$/,'');
+          wikiLink=' <a href="'+wikiMap[w].page+rel+'" target="_blank" style="color:#22c55e;font-size:11px;text-decoration:none">[Wiki]</a>';
+          break;
+        }
+      }
+      var title=(r.title||src).replace(/\\\\/g,'');
+      html+='<div class="result'+cls+'"><div class="meta"><span class="source" style="font-weight:600;color:#e2e8f0">'+esc(title)+'</span>'+badge+wikiLink+'<span style="font-size:11px;color:#64748b">'+esc(src)+'</span><span>块 '+r.chunk+'</span><span>相关度 '+(r.score*100).toFixed(0)+'%</span></div><div class="preview">'+esc(r.preview)+'</div></div>';
+    });
+    document.getElementById('sresults').innerHTML=html;
+  }).catch(function(){document.getElementById('sresults').innerHTML='<div id="sempty">搜索失败</div>'});
+}
+
+// Upload
+function doUpload(files){
+  if(!files||!files.length)return;
+  var status=document.getElementById('uploadStatus');status.innerHTML='检查重复...';
+  var skipped=[],toUpload=[],checks=files.length,checked=0;
+  for(var i=0;i<files.length;i++){(function(f){
+    fetch(BASE+'/exists?filename='+encodeURIComponent(f.name)).then(function(r){return r.json()}).then(function(d){
+      if(d.exists)skipped.push(f.name);else toUpload.push(f);
+      checked++;if(checked>=checks)start();
+    }).catch(function(){toUpload.push(f);checked++;if(checked>=checks)start()});
+  })(files[i])}
+  function start(){
+    var msgs=[];
+    if(skipped.length)msgs.push('⚠️ 跳过重复: '+skipped.join(', '));
+    if(!toUpload.length){msgs.push('所有文件已存在，无需导入');status.innerHTML=msgs.join('<br>');return}
+    msgs.push('共 '+toUpload.length+' 个文件待导入...');
+    status.innerHTML=msgs.join('<br>');uploadOne(0);
+  }
+  function uploadOne(i){
+    if(i>=toUpload.length){status.innerHTML+='<br>✅ 全部完成！';loadHistory();return}
+    var f=toUpload[i],fd=new FormData();fd.append('file',f);
+    status.innerHTML+='<br>📥 ['+(i+1)+'/'+toUpload.length+'] '+f.name+'...';
+    fetch(BASE+'/ingest',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+      status.innerHTML=status.innerHTML.replace(/📥.*$/m,(d.ok?'✅ ':'❌ ')+'['+(i+1)+'/'+toUpload.length+'] '+f.name+' → '+(d.chunks||0)+' 块');
+      setTimeout(function(){uploadOne(i+1)},300);
+    }).catch(function(e){status.innerHTML+='<br>❌ '+f.name+' 连接失败';setTimeout(function(){uploadOne(i+1)},300)});
+  }
+}
+
+// History with pagination
+function loadHistory(){
+  document.getElementById('hresults').innerHTML='<div id="hloading">加载中...</div>';
+  fetch(BASE+'/history').then(function(r){return r.json()}).then(function(d){
+    allHistory=d.history||[];
+    renderHistoryPage(1);
+  }).catch(function(){document.getElementById('hresults').innerHTML='<div style="text-align:center;padding:40px;color:#64748b">加载失败</div>'});
+}
+
+function renderHistoryPage(p){
+  histPage=p;
+  var total=allHistory.length, totalPages=Math.ceil(total/HIST_PER)||1;
+  if(p>totalPages)p=totalPages;
+  var start=(p-1)*HIST_PER, end=Math.min(start+HIST_PER,total);
+  var page=allHistory.slice(start,end);
+  
+  if(!page.length){
+    document.getElementById('hresults').innerHTML='<div style="text-align:center;padding:40px;color:#64748b;font-size:14px">暂无导入记录</div>';
+    document.getElementById('pagination').innerHTML='';
+    return;
+  }
+  var html='<div style="font-size:13px;color:#64748b;margin-bottom:12px">共 '+total+' 条，第 '+(start+1)+'-'+end+' 条</div>';
+  page.forEach(function(h,i){
+    var displayTitle=h.title||h.filename;
+    html+='<div class="history-item"><span class="icon">📄</span><span class="name" title="'+esc(displayTitle)+'">'+(start+i+1)+'. '+esc(displayTitle)+'</span><span class="chunks">'+(h.chunks||0)+' 块</span><span class="time">'+h.time+'</span>'
+      +'<button class="wiki-btn" onclick="importToWiki(\''+esc(h.filename)+'\')" title="导入到对应Wiki">+Wiki</button>'
+      +'</div>';
+  });
+  document.getElementById('hresults').innerHTML=html;
+
+  // Pagination buttons
+  var phtml='';
+  if(totalPages>1){
+    phtml+='<button onclick="renderHistoryPage(1)"'+(p===1?' disabled':'')+'>首页</button>';
+    phtml+='<button onclick="renderHistoryPage('+(p-1)+')"'+(p===1?' disabled':'')+'>上一页</button>';
+    for(var i=Math.max(1,p-2);i<=Math.min(totalPages,p+2);i++){
+      phtml+='<button onclick="renderHistoryPage('+i+')"'+(i===p?' class="active"':'')+'>'+i+'</button>';
+    }
+    phtml+='<button onclick="renderHistoryPage('+(p+1)+')"'+(p===totalPages?' disabled':'')+'>下一页</button>';
+    phtml+='<button onclick="renderHistoryPage('+totalPages+')"'+(p===totalPages?' disabled':'')+'>末页</button>';
+  }
+  document.getElementById('pagination').innerHTML=phtml;
+}
+
+// Wiki import
+function importToWiki(filename){
+  var wiki=prompt('选择导入目标Wiki:\n1 = 国资Wiki (8789)\n2 = 医学Wiki (8790)\n3 = AI大模型Wiki (8791)\n4 = AI知识库 (8788)','1');
+  if(!wiki)return;
+  var wikis={'1':{name:'国资',port:'8789'},'2':{name:'医学',port:'8790'},'3':{name:'AI大模型',port:'8791'},'4':{name:'AI知识库',port:'8788'}};
+  var w=wikis[wiki];if(!w){alert('无效选择');return}
+  alert('请手动操作：\n1. 从上传页面重新上传文件 "'+filename+'"\n2. 然后在终端执行：\n   cp 文件路径 ~/'+w.name.replace('国资','Guozi').replace('医学','Yixue').replace('AI大模型','AI-LLM').replace('AI知识库','Hermes')+'-Wiki/raw/articles/\'\n   或通过侧栏对应Wiki页面手动归档');
+}
+
+function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+loadHistory();
+</script>
+</body>
+</html>

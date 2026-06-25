@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes 更新流程</title>
+<style>
+body{font-family:-apple-system,'Microsoft YaHei',sans-serif;max-width:680px;margin:40px auto;padding:20px;color:#333;background:#f8f9fa}
+h1{color:#1a365d;font-size:22px}
+.card{background:#fff;border-radius:8px;padding:20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.card h3{color:#2d74c8;margin:0 0 8px}
+code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:13px}
+.note{background:#fff3cd;padding:12px;border-radius:6px;margin:16px 0;font-size:14px}
+</style>
+</head>
+<body>
+<h1>🔄 Hermes 双仓库更新流程</h1>
+
+<div class="note">⚠️ 在 AI 对话中输入 <code>更新</code> 即可自动执行完整更新流程</div>
+
+<div class="card">
+<h3>1. hermes-agent（Agent核心）</h3>
+<p>路径: <code>~/.hermes/hermes-agent</code></p>
+<p>命令: <code>git stash → git fetch → git merge → npm build → 重启gateway</code></p>
+</div>
+
+<div class="card">
+<h3>2. hermes-webui（Web界面）</h3>
+<p>路径: <code>~/hermes-webui</code></p>
+<p>命令: <code>git stash → git fetch → git merge → 恢复定制 → 重启WebUI</code></p>
+</div>
+
+<div class="card">
+<h3>3. 更新后验证</h3>
+<p>✅ 品牌: 苏哲HermesAgent | ✅ 导航: 6按钮 | ✅ Wiki: 4端口 | ✅ 登录: 正常</p>
+</div>
+
+<p style="text-align:center;color:#999;font-size:13px;margin-top:30px">个性化定制自动保留（品牌+导航+Wiki+CSS）</p>
+</body>
+</html>
