@@ -11935,7 +11935,7 @@ function renderMessages(options){
           const args=p.input||{};
           const tid=p.id||'';
           const patchSnippet=_cliPatchSnippetFromArgs(name,args);
-          const resultSnippet=resultsByTid[tid]||'';
+          const resultSnippet=resultsByTid[tid]||persistedSnippetByTid[tid]||'';
           const argsSnap=_toolArgsSnapshot(args);
           derived.push(copyLiveToolMetadata({
             name,

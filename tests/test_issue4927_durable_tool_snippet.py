@@ -60,3 +60,20 @@ def test_partial_tool_calls_path_also_falls_back():
         "the partial-tool-calls derived path must also fall back to the "
         "persisted snippet (#4927)"
     )
+
+
+def test_all_derived_result_snippet_reads_have_fallback():
+    """Every derived-push result-snippet READ (OpenAI top-level, Anthropic
+    tool_use content-array, and partial) must include the persisted fallback —
+    a missed branch (e.g. the Anthropic content-array push) would still
+    cold-reload with an empty body (#4927 gate)."""
+    region = _slice_derived_rebuild()
+    # Find every `const resultSnippet=resultsByTid[tid]...` read and assert each
+    # one chains to persistedSnippetByTid.
+    reads = re.findall(r"const resultSnippet=resultsByTid\[tid\][^;]*;", region)
+    assert reads, "no resultSnippet reads found in the derived rebuild"
+    for r in reads:
+        assert "persistedSnippetByTid[tid]" in r, (
+            f"derived resultSnippet read missing the persisted fallback (#4927): {r}"
+        )
+
