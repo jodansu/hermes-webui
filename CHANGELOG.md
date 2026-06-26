@@ -3,6 +3,54 @@
 
 ## [Unreleased]
 
+## [v0.51.677] — 2026-06-26 — Release YG (cron run logs render as literal text, not mangled markdown)
+
+### Fixed
+
+- **Cron job run logs (prompt/response in the cron detail panel) now render as literal preformatted text instead of being mangled by Markdown.** The expanded run body and the "View full output" view passed raw output through `renderMd()`, so JSON/plain-text logs lost their newlines, had special characters interpreted, and lines beginning with `#`/`|`/`>` turned into headings/tables/blockquotes. Both paths now render via a DOM-created `<pre><code>` with `textContent`, preserving whitespace exactly and rendering nothing as Markdown (also XSS-safe — no `innerHTML` on raw output). The usage footer and action button stay outside the preformatted block. Thanks @luandnh. (#4977)
+
+## [v0.51.676] — 2026-06-26 — Release YF (submitted message no longer renders twice — or vanishes — on active reload)
+
+### Fixed
+
+- **On an active-session reload/reconnect, the submitted user turn no longer renders twice (and a distinct repeated prompt no longer vanishes).** The browser can see the current turn through several recovery sources (optimistic/in-flight, `pending_user_message`, replay/checkpoint), and the de-duplication had to balance two failure modes. Pending/in-flight user-turn dedupe is now scoped to the **current-turn tail** only (stopping at the most recent non-live assistant), so: a genuine double-render of the *same* current turn is still collapsed to one, while a *new* turn whose text matches an *earlier* historical message (e.g. sending the same prompt twice, including under the default deferred save mode where only `pending_user_message` exists) is correctly preserved instead of being suppressed. Display-only wrappers (workspace/attachment/forced-skill envelopes) are normalized for the comparison; pending attachments reattach only on a genuine same-turn match. Thanks @franksong2702. (#4826, fixes #4825)
+
+## [v0.51.675] — 2026-06-26 — Release YE (long conversations open fast — bounded state.db tail reads)
+
+### Fixed
+
+- **Opening a long conversation no longer shows "Loading…" for 1-2 seconds.** `/api/session` loaded the entire `state.db` message history before trimming to the visible window; for an 844-message session that cold read took ~1.75s. The paginated path now pushes the client's `msg_limit` into SQL via a `since_timestamp` floor derived from the sidecar tail, reading only the tail window (expected drop to a few hundred ms). The optimization is taken only when it is provably output-identical to the full read: it keeps NULL-timestamp rows (`timestamp IS NULL OR timestamp >= ?`), and a below-floor prefix guard compares the **full merge identity** (`role`, `content`, and parsed `tool_calls`) between the sidecar and `state.db` prefixes — bailing to the full read whenever they can't be proven equal (or the schema lacks the needed columns), so `message_count`/`_messages_offset` and "load older" paging stay byte-identical. Callers needing all rows are unaffected (the floor is opt-in). Thanks @franksong2702. (#4920, fixes #4918 Problem-1)
+
+## [v0.51.674] — 2026-06-26 — Release YD (server no longer exhausts threads under sidebar-poll load)
+
+### Fixed
+
+- **The server no longer runs out of OS threads (and stops accepting connections) under sustained `/api/sessions` load.** The slow-request diagnostics helper spawned a fresh `threading.Timer` — one OS thread — for every tracked request (the high-frequency sidebar poll and chat-start), held alive until the request finished. Under sustained load that exhausted the per-process thread cap (`RuntimeError: can't start new thread`), failing both the diagnostics timer and the HTTP request worker, after which new connections were refused. The per-request timer is replaced with a single process-global watchdog daemon thread that scans in-flight requests on a ~1s tick, so timeout tracking now costs one thread per process regardless of request rate. Diagnostics behavior (slow-request warnings) is unchanged. Reported by enihcam. (#4973)
+
+## [v0.51.673] — 2026-06-26 — Release YC (a stale approval card clears instead of dead-ending)
+
+### Fixed
+
+- **A stale command-approval card now clears instead of dead-ending on "Approval response not accepted." (#4948 local variant, #4771 follow-up).** On the default local backend, if an approval card was still on screen when its turn ended (cancel, fork, provider error, or normal completion while pending), clicking Approve/Deny sent an id that no longer matched anything and the card got stuck behind that error toast. The server now distinguishes a genuinely stale card (nothing pending for the session → clears the orphan card) from a stale-id click made while a *different* approval is still live (still rejected, so it can never resolve the wrong command — #527 preserved). Reported by santastabber and b3nw.
+
+## [v0.51.672] — 2026-06-26 — Release YB (faster cron sidebar rebuild on stores missing the message index)
+
+### Fixed
+
+- **The cron/CLI sidebar rebuild is much faster on a `state.db` that lacks the message-session index.** When `idx_messages_session` is missing (an unmigrated/older store), the cron-only capped rescue scan ran a correlated per-row latest-message subquery that could take multiple seconds cold. That pass now uses a single pre-aggregated latest-message ordering (one grouped scan) for the missing-index case only; the common indexed path is unchanged (the correlated ordering is still the faster plan on a healthy migrated store), and the session set/order is identical to before. Follow-up to the #4842 chain, independent of #4952. Thanks @rodboev. (#4962)
+
+## [v0.51.671] — 2026-06-26 — Release YA (sidebar polls no longer stall behind a slow session-list rebuild)
+
+### Fixed
+
+- **The conversation sidebar no longer stalls (or pins CPU) while a cron-heavy session-list rebuild is in flight.** `get_cli_sessions()` previously held the CLI/cron cache lock across the entire slow rebuild, so one refresh serialized every follower `/api/sessions` poll for that key — a recurring multi-second `/api/session` stall and 100% CPU on long-lived, cron-heavy instances (#4842). The rebuild now runs outside the lock with stale-while-revalidate + singleflight: followers serve the existing rows during a rebuild and a single owner refreshes (cold followers join it rather than each starting a parallel rebuild), with bounded waits so a slow owner can never hang a follower, and cache invalidation stays atomic across a clear-during-rebuild. Completes the #4842 performance chain on top of #4889 and #4908/#4949. Thanks @rodboev. (#4952, closes #4842)
+
+## [v0.51.670] — 2026-06-26 — Release XZ (settled tool-call rows stay before the final answer)
+
+### Fixed
+
+- **A complete final answer no longer looks unfinished when an earlier tool call shares its timestamp.** On a paginated load, older `state.db` assistant rows carrying distinct tool calls were appended after the settled final answer instead of inserted in order, so the renderer treated the real final answer as a non-final segment until a refresh. The merge now inserts those tool-call rows chronologically — including the equal-timestamp case (a fast tool call and the final answer landing in the same second), where the final answer now correctly stays last. The existing dedupe, tool-call→result block integrity, and watermark reconciliation are unchanged. Thanks @franksong2702. (#4893)
+
 ## [v0.51.669] — 2026-06-26 — Release XY (set OpenAI priority service tier from the model picker)
 
 ### Added

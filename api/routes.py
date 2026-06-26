@@ -6068,6 +6068,18 @@ def _limited_webui_messages_for_display(session, state_db_messages) -> list:
     the sidecar yet.
     """
     sidecar_messages = _webui_sidecar_lineage_messages_for_display(session)
+    return _limited_webui_messages_for_display_with_sidecar(
+        session,
+        sidecar_messages,
+        state_db_messages,
+    )
+
+
+def _limited_webui_messages_for_display_with_sidecar(session, sidecar_messages, state_db_messages) -> list:
+    if sidecar_messages is None:
+        sidecar_messages = _webui_sidecar_lineage_messages_for_display(session)
+    else:
+        sidecar_messages = list(sidecar_messages or [])
     state_db_messages = list(state_db_messages or [])
     if not state_db_messages:
         return sidecar_messages
@@ -6085,6 +6097,54 @@ def _limited_webui_messages_for_display(session, state_db_messages) -> list:
         truncation_watermark=getattr(session, "truncation_watermark", None),
         truncation_boundary=getattr(session, "truncation_boundary", None),
     )
+
+
+def _state_db_since_timestamp_for_limited_display(session, msg_limit, msg_before=None):
+    """Return (timestamp floor, sidecar messages) for bounded state.db tail reads.
+
+    The display window limit counts visible transcript rows after WebUI sidecar
+    and state.db reconciliation, so this deliberately does not SQL ``LIMIT`` raw
+    rows.  Instead, for the common initial tail load, keep the full sidecar
+    coordinate space and read a conservative recent state.db superset.  Older
+    page loads and edit/truncation recovery shapes stay on the full state.db
+    path because their correctness depends on older reconciliation rows.
+    """
+    if msg_limit is None or msg_before is not None:
+        return None, None
+    if getattr(session, "truncation_watermark", None) not in (None, ""):
+        return None, None
+    if getattr(session, "truncation_boundary", None) not in (None, ""):
+        return None, None
+
+    sidecar_messages = _webui_sidecar_lineage_messages_for_display(session)
+    if not sidecar_messages:
+        return None, sidecar_messages
+    sidecar_timestamps = [_message_timestamp_as_float(msg) for msg in sidecar_messages]
+    if any(ts is None for ts in sidecar_timestamps):
+        return None, sidecar_messages
+
+    try:
+        limit = max(1, int(msg_limit))
+    except (TypeError, ValueError):
+        return None, sidecar_messages
+    raw_budget = max(300, limit * 10)
+    if len(sidecar_messages) <= raw_budget:
+        return None, sidecar_messages
+
+    floor = min(sidecar_timestamps[-raw_budget:])
+    sidecar_before_keys = [
+        _session_message_visible_key(msg)
+        for msg, ts in zip(sidecar_messages, sidecar_timestamps, strict=True)
+        if ts < floor
+    ]
+    state_before_keys = get_state_db_session_message_keys_before_timestamp(
+        getattr(session, "session_id", None),
+        floor,
+        profile=getattr(session, "profile", None) or None,
+    )
+    if state_before_keys is None or state_before_keys != sidecar_before_keys:
+        return None, sidecar_messages
+    return floor, sidecar_messages
 
 
 def _messages_start_with_visible_prefix(messages, prefix) -> bool:
@@ -6661,6 +6721,7 @@ from api.models import (
     get_cli_sessions,
     get_cli_session_messages,
     get_state_db_session_messages,
+    get_state_db_session_message_keys_before_timestamp,
     get_state_db_session_summary,
     merge_session_messages_append_only,
     _enrich_sidebar_lineage_metadata,
@@ -6668,6 +6729,7 @@ from api.models import (
     _merge_session_display_metadata,
     _session_message_merge_key,
     _session_message_visible_key,
+    _message_timestamp_as_float,
     _is_empty_partial_activity_message,
     _hide_from_default_sidebar,
     prune_session_from_index,
@@ -9541,10 +9603,27 @@ def handle_get(handler, parsed) -> bool:
             cli_messages = []
             state_db_messages = []
             metadata_summary = None
+            limited_sidecar_messages = None
+            state_db_since_timestamp = None
             if is_messaging_session:
                 cli_messages = get_cli_session_messages(sid)
             elif load_messages:
-                state_db_messages = get_state_db_session_messages(sid, profile=_session_profile)
+                if msg_limit is not None:
+                    (
+                        state_db_since_timestamp,
+                        limited_sidecar_messages,
+                    ) = _state_db_since_timestamp_for_limited_display(
+                        s,
+                        msg_limit,
+                        msg_before=msg_before,
+                    )
+                _state_db_reader_kwargs = {"profile": _session_profile}
+                if state_db_since_timestamp is not None:
+                    _state_db_reader_kwargs["since_timestamp"] = state_db_since_timestamp
+                state_db_messages = get_state_db_session_messages(
+                    sid,
+                    **_state_db_reader_kwargs,
+                )
             elif not is_messaging_session:
                 # Metadata-only callers still need the same append-only
                 # reconciliation contract as full loads so stale/replayed
@@ -9575,7 +9654,11 @@ def handle_get(handler, parsed) -> bool:
                     # them chronologically and dedupe exact repeats.
                     _all_msgs = _merged_session_messages_for_display(s, cli_messages)
                 elif msg_limit is not None:
-                    _all_msgs = _limited_webui_messages_for_display(s, state_db_messages)
+                    _all_msgs = _limited_webui_messages_for_display_with_sidecar(
+                        s,
+                        limited_sidecar_messages,
+                        state_db_messages,
+                    )
                 else:
                     _all_msgs = merge_session_messages_append_only(
                         _webui_sidecar_lineage_messages_for_display(s),
@@ -18695,6 +18778,27 @@ def _gateway_pending_approval_without_run_id(sid: str, approval_id: str) -> bool
         return bool(entries[0].get(_GATEWAY_MIRROR_FLAG))
 
 
+def _session_has_pending_approval(sid: str) -> bool:
+    """True when the session still has any live pending approval to act on.
+
+    Used to tell a benign STALE-CARD click (the card's approval already
+    resolved or its stream ended, so nothing is pending) apart from a stale
+    explicit-id click made WHILE a different approval is still live (which must
+    stay unresolved so it can't accidentally approve the wrong command — #527).
+    Reconciles the gateway mirror first so a purged orphan is not counted.
+    """
+    with _lock:
+        reconcile_gateway_pending_mirror_locked(sid)
+        queue = _pending.get(sid)
+        if isinstance(queue, list):
+            if queue:
+                return True
+        elif queue:
+            return True
+        gw_queue = _gateway_queues.get(sid)
+        return bool(gw_queue)
+
+
 def _handle_approval_respond(handler, body):
     sid = body.get("session_id", "")
     if not sid:
@@ -18769,6 +18873,28 @@ def _handle_approval_respond(handler, body):
         ok = adapter.respond_approval(sid, approval_id, choice).accepted
     else:
         ok = _resolve_approval_legacy(sid, approval_id, choice)
+    if not ok and not _session_has_pending_approval(sid):
+        # The local resolution path returns False when an explicit approval_id
+        # was sent but no matching pending entry exists. There are two distinct
+        # causes, and only one is an error:
+        #   (a) a STALE CARD — the approval the card was rendered from already
+        #       resolved or its stream ended (cancel / fork / provider error /
+        #       completion while pending), so the agent's gateway entry was
+        #       dropped and reconcile purged the mirror. Nothing is pending for
+        #       this session anymore. Before #4771 the frontend was
+        #       fire-and-forget and this silently cleared the card; #4771 began
+        #       surfacing the bare {ok:false} as "Approval response not
+        #       accepted." with a STUCK card (reported by Jamie on .666 / b3nw;
+        #       the local-backend variant of #4948).
+        #   (b) a STALE EXPLICIT ID while a DIFFERENT approval IS live — that
+        #       MUST stay ok:false so a stale click on resolved approval A can
+        #       never resolve the unrelated live approval B (#527 guard).
+        # Distinguish them: when the session has NO pending approval at all,
+        # the click is benign — report it resolved so the UI clears the orphan
+        # card instead of dead-ending. When something IS still pending, keep
+        # the protective ok:false. `stale_cleared` lets the frontend log/branch
+        # without showing an error toast.
+        return j(handler, {"ok": True, "choice": choice, "stale_cleared": True})
     return j(handler, {"ok": ok, "choice": choice})
 
 
