@@ -73,6 +73,140 @@ def _run_pet_js(*, status, adapter_status=None, hook_result=None, hook_throws=Fa
     return json.loads(proc.stdout)
 
 
+def _run_send_js(*, command, status, adapter_status=None):
+    script = textwrap.dedent(
+        f"""
+        const vm = require('vm');
+        const msgInput = {{
+          value: {json.dumps(command)},
+          style: {{}},
+          scrollHeight: 0,
+          addEventListener(){{}},
+          removeEventListener(){{}},
+          focus(){{}},
+          blur(){{}},
+          setSelectionRange(){{}},
+        }};
+        const commandExecCalls = [];
+        const genericEl = {{
+          addEventListener(){{}},
+          removeEventListener(){{}},
+          classList: {{ add(){{}}, remove(){{}} }},
+          style: {{}},
+          dataset: {{}},
+          value: '',
+          textContent: '',
+          innerHTML: '',
+        }};
+        const ctx = {{
+          console,
+          window: {{
+            __HERMES_WEBUI_DESKTOP_COMPANION_STATUS__: {json.dumps(adapter_status)},
+            addEventListener(){{}},
+            requestAnimationFrame(cb){{ return 1; }},
+          }},
+          document: {{
+            addEventListener(){{}},
+            getElementById(id){{ return id === 'msg' ? msgInput : genericEl; }},
+            querySelector(){{ return null; }},
+          }},
+          localStorage: {{ getItem(){{return null;}}, setItem(){{}}, removeItem(){{}} }},
+          t: key => key,
+          S: {{
+            busy: false,
+            session: null,
+            pendingFiles: [],
+            messages: [],
+            activeProfile: 'default',
+            activeStreamId: null,
+          }},
+          INFLIGHT: {{}},
+          _pendingSelections: [],
+          _sendInProgress: false,
+          _sendInProgressSid: null,
+          _composerTextWithPendingSelections(){{ return msgInput.value; }},
+          _flushSelectionBlocksToComposer(){{}},
+          _dismissHandoffHint(){{}},
+          _clearStaleBusyStateBeforeSend(){{ return false; }},
+          _clearComposerAfterQueuedSelectionSend(){{}},
+          _chatPayloadModelState(){{ return {{ model: '', model_provider: '' }}; }},
+          queueSessionMessage(){{}},
+          updateQueueBadge(){{}},
+          renderTray(){{}},
+          showToast(){{}},
+          renderMessages(){{}},
+          renderSessionList(){{}},
+          autoResize(){{}},
+          hideCmdDropdown(){{}},
+          syncTopbar(){{}},
+          setBusy(){{}},
+          setComposerStatus(){{}},
+          setStatus(){{}},
+          updateSendBtn(){{}},
+          clearOptimisticSessionStreaming(){{}},
+          newSession: async () => {{
+            ctx.S.session = {{ session_id: 'sid-1', title: 'New Chat' }};
+          }},
+          $: id => {{
+            if (id === 'msg') return msgInput;
+            return genericEl;
+          }},
+          api: async (path, options) => {{
+            if (path === '/api/commands') return {{
+              commands: [
+                {{
+                  name: 'pet',
+                  description: 'Desktop Companion command',
+                  category: 'Tools',
+                  aliases: [],
+                  cli_only: true,
+                  gateway_only: false
+                }},
+                {{
+                  name: 'browser',
+                  description: 'Attach browser tools',
+                  category: 'Tools',
+                  aliases: ['browse'],
+                  cli_only: true,
+                  gateway_only: false
+                }}
+              ]
+            }};
+            if (path === '/api/extensions/status') return {json.dumps(status)};
+            if (path === '/api/commands/exec') {{
+              commandExecCalls.push(JSON.parse(options.body).command);
+              return {{ output: 'unexpected exec' }};
+            }}
+            throw new Error('unexpected api path: ' + path);
+          }},
+        }};
+        ctx.window.window = ctx.window;
+        vm.createContext(ctx);
+        vm.runInContext({json.dumps(COMMANDS_JS)}, ctx);
+        vm.runInContext({json.dumps(MESSAGES_JS)}, ctx);
+        (async () => {{
+          await vm.runInContext('send()', ctx);
+          process.stdout.write(JSON.stringify({{
+            messages: ctx.S.messages,
+            commandExecCalls,
+            remainingInput: msgInput.value,
+          }}));
+        }})().catch(err => {{
+          console.error(err && err.stack || err);
+          process.exit(1);
+        }});
+        """
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
+        handle.write(script)
+        script_path = Path(handle.name)
+    try:
+        proc = subprocess.run(["node", str(script_path)], check=True, capture_output=True, text=True)
+    finally:
+        script_path.unlink(missing_ok=True)
+    return json.loads(proc.stdout)
+
+
 def test_pet_help_routes_to_install_guidance_when_companion_is_missing():
     result = _run_pet_js(
         status={"enabled": False, "extensions": [], "gallery_installed": {}},
@@ -233,12 +367,23 @@ def test_pet_help_falls_back_when_hook_is_missing_or_fails():
 
 
 def test_pet_slash_intercept_bypasses_generic_agent_execution():
-    intercept_idx = MESSAGES_JS.find("Slash command intercept")
-    normal_send_idx = MESSAGES_JS.find("const activeSid=S.session.session_id", intercept_idx)
-    assert intercept_idx != -1
-    assert normal_send_idx != -1
-    intercept = MESSAGES_JS[intercept_idx:normal_send_idx]
+    pet = _run_send_js(
+        command="/pet feed tuna",
+        status={"enabled": False, "extensions": []},
+        adapter_status=None,
+    )
+    browser = _run_send_js(
+        command="/browser open",
+        status={"enabled": False, "extensions": []},
+        adapter_status=None,
+    )
 
-    assert "if(_parsedCmd.name==='pet')" in intercept
-    assert "handlePetSlashCommand(text,{name:'pet'})" in intercept
-    assert "executeAgentCommand(text,_agentCmd||{name:_agentCmdName})" in intercept
+    assert [item["role"] for item in pet["messages"]] == ["user", "assistant"]
+    assert "Desktop Companion is not installed yet." in pet["messages"][1]["content"]
+    assert "Hermes CLI-only command" not in pet["messages"][1]["content"]
+    assert pet["commandExecCalls"] == []
+    assert pet["remainingInput"] == ""
+
+    assert [item["role"] for item in browser["messages"]] == ["user", "assistant"]
+    assert "`/browser` is a Hermes CLI-only command" in browser["messages"][1]["content"]
+    assert browser["commandExecCalls"] == []

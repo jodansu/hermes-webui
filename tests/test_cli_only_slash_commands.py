@@ -101,6 +101,14 @@ def _run_commands_js(script_body: str) -> dict:
             if (path === '/api/commands') return {{
               commands: [
                 {{
+                  name: 'pet',
+                  description: 'Desktop Companion command',
+                  category: 'Tools',
+                  aliases: [],
+                  cli_only: true,
+                  gateway_only: false
+                }},
+                {{
                   name: 'browser',
                   description: 'Attach browser tools',
                   category: 'Tools',
@@ -312,6 +320,7 @@ def test_cli_only_slugs_reserve_skill_autocomplete_namespace():
         return {
           pet_names: pet.map(item => item.name),
           pet_sources: pet.map(item => item.source),
+          pet_descs: pet.map(item => item.desc),
           browser_names: browser.map(item => item.name),
           handoff_names: handoff.map(item => item.name),
           delegate_names: delegate.map(item => item.name),
@@ -329,6 +338,7 @@ def test_cli_only_slugs_reserve_skill_autocomplete_namespace():
 
     assert result["pet_names"] == ["pet"]
     assert result["pet_sources"] == ["agent"]
+    assert result["pet_descs"] == ["Desktop Companion command"]
     assert result["browser_names"] == []
     assert result["handoff_names"] == []
     assert result["delegate_names"] == []
