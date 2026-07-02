@@ -232,6 +232,7 @@ def test_elevenlabs_tts_does_not_follow_upstream_redirect(monkeypatch):
 
 def test_elevenlabs_tts_uses_no_proxy_opener(monkeypatch):
     captured = {}
+    import urllib.request as _ur
 
     class _Resp:
         def __init__(self):
@@ -246,6 +247,9 @@ def test_elevenlabs_tts_uses_no_proxy_opener(monkeypatch):
             return self
         def __exit__(self, *a):
             return False
+
+    def _fake_urlopen(req, timeout=30):
+        return _Resp()
 
     def _fake_tts_open(req, timeout=30, opener_factory=None, **_kw):
         captured["opener_factory"] = opener_factory
@@ -266,6 +270,7 @@ def test_elevenlabs_tts_uses_no_proxy_opener(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-test")
     import api.config as _cfg
     monkeypatch.setattr(_cfg, "get_config", lambda: {"tts": {"elevenlabs": {"voice_id": "pNInz6obpgDQGcFmaJgB", "model": "eleven_multilingual_v2"}}})
+    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
     monkeypatch.setattr(routes, "_tts_open", _fake_tts_open)
 
     h = _post({"text": "hello world", "engine": "elevenlabs"}, client="9.9.9.7")
