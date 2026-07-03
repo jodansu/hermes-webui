@@ -1504,9 +1504,19 @@ function _mountMermaidViewer(svgEl, options = {}) {
   };
   root._mermaidViewer = state;
 
+  function _lightboxViewportEnvelope() {
+    const width = Math.round((window.innerWidth || box.width) * 0.9);
+    const height = Math.round((window.innerHeight || box.height) * 0.9);
+    return {
+      width: Math.max(1, Number.isFinite(width) ? width : 1),
+      height: Math.max(1, Number.isFinite(height) ? height : 1),
+    };
+  }
+
   function _viewportFallbackSize(){
-    const width = mode === 'lightbox' ? Math.round((window.innerWidth || box.width) * 0.9) : Math.round(window.innerWidth || box.width);
-    const height = mode === 'lightbox' ? Math.round((window.innerHeight || box.height) * 0.9) : Math.round((window.innerHeight || box.height) * 0.7);
+    if(mode === 'lightbox') return _lightboxViewportEnvelope();
+    const width = Math.round(window.innerWidth || box.width);
+    const height = Math.round((window.innerHeight || box.height) * 0.7);
     return {
       width: Math.max(1, Number.isFinite(width) ? width : 1),
       height: Math.max(1, Number.isFinite(height) ? height : 1),
@@ -1516,8 +1526,12 @@ function _mountMermaidViewer(svgEl, options = {}) {
   function _viewportSize(){
     const rect = viewport.getBoundingClientRect ? viewport.getBoundingClientRect() : null;
     const fallback = _viewportFallbackSize();
-    const width = viewport.clientWidth || (rect && rect.width) || fallback.width;
-    const height = viewport.clientHeight || (rect && rect.height) || fallback.height;
+    const width = mode === 'lightbox'
+      ? fallback.width
+      : (viewport.clientWidth || (rect && rect.width) || fallback.width);
+    const height = mode === 'lightbox'
+      ? fallback.height
+      : (viewport.clientHeight || (rect && rect.height) || fallback.height);
     return {
       width: Math.max(1, Number(width) || box.width || 1),
       height: Math.max(1, Number(height) || box.height || 1),
@@ -1529,10 +1543,10 @@ function _mountMermaidViewer(svgEl, options = {}) {
   }
 
   function _minScale(){
-    // Lightbox keeps master's flat minimum (unchanged zoom-out floor / fit
-    // bounds). Only inline mode uses the readable-height-derived minimum so a
-    // short inline viewport can't shrink the diagram below usability (#5434).
-    if(mode === 'lightbox') return _MERMAID_VIEWER_MIN_SCALE;
+    // Inline stays bounded by readable-height minimum to preserve usability.
+    // Lightbox allows fit-to-screen to shrink below the old 0.25 floor when
+    // the diagram envelope is narrower than 25%.
+    if(mode === 'lightbox') return Math.min(_MERMAID_VIEWER_MIN_SCALE, _rawFitScale(_viewportSize()));
     return Math.min(_MERMAID_VIEWER_MIN_SCALE, _inlineViewportHeight() / Math.max(1, box.height));
   }
 
@@ -1580,6 +1594,16 @@ function _mountMermaidViewer(svgEl, options = {}) {
     const nextScale = _fitScale();
     state.scale = nextScale;
     _centerForScale(nextScale);
+    _applyTransform();
+  }
+
+  function _resizeToEnvelope(){
+    if(mode !== 'lightbox') return;
+    const envelope = _lightboxViewportEnvelope();
+    viewport.style.width = Math.max(1, Math.round(envelope.width)) + 'px';
+    viewport.style.height = Math.max(1, Math.round(envelope.height)) + 'px';
+    state.scale = _fitScale();
+    _centerForScale(state.scale);
     _applyTransform();
   }
 
@@ -1669,6 +1693,7 @@ function _mountMermaidViewer(svgEl, options = {}) {
   state.zoomOut = _zoomOut;
   state.zoomAt = _setScale;
   state.applyTransform = _applyTransform;
+  state.resizeToEnvelope = _resizeToEnvelope;
   state.openLightbox = openLightbox;
 
   toolbar.appendChild(_createMermaidViewerButton('Zoom in', 'zoomIn', _zoomIn));
@@ -1680,22 +1705,16 @@ function _mountMermaidViewer(svgEl, options = {}) {
   }
 
   if(mode === 'lightbox'){
-    // Preserve master's lightbox initialization exactly: fit-to-screen scale
-    // and a viewport envelope sized to the fitted diagram. The inline readable-
-    // height sizing below must NOT leak into lightbox mode (#5434 gate finding).
-    const initialFit = _fitScale();
-    state.scale = initialFit;
-    viewport.style.width = Math.max(1, Math.round(box.width * initialFit)) + 'px';
-    viewport.style.height = Math.max(1, Math.round(box.height * initialFit)) + 'px';
+    state.resizeToEnvelope();
   } else {
     const initialHeight = _inlineViewportHeight();
     const readableScale = initialHeight / Math.max(1, box.height);
     state.scale = Math.max(_minScale(), Math.min(_MERMAID_VIEWER_MAX_SCALE, readableScale));
     viewport.style.width = '100%';
     viewport.style.height = Math.max(1, Math.round(initialHeight)) + 'px';
+    _centerForScale(state.scale);
+    _applyTransform();
   }
-  _centerForScale(state.scale);
-  _applyTransform();
 
   return root;
 }
@@ -1744,6 +1763,12 @@ function _openMermaidLightbox(svgEl) {
   clone.removeAttribute('width');
   clone.removeAttribute('height');
   const viewer = _mountMermaidViewer(clone, {mode:'lightbox'});
+  if(viewer && viewer._mermaidViewer && typeof viewer._mermaidViewer.resizeToEnvelope === 'function'){
+    lb._mermaidResizeHandler = () => viewer._mermaidViewer.resizeToEnvelope();
+    if(window && typeof window.addEventListener === 'function'){
+      window.addEventListener('resize', lb._mermaidResizeHandler);
+    }
+  }
   const cls = document.createElement('button');
   cls.className = 'img-lightbox-close';
   cls.setAttribute('aria-label', 'Close');
@@ -1757,6 +1782,7 @@ function _openMermaidLightbox(svgEl) {
   };
   document.body.appendChild(lb);
   document.addEventListener('keydown', lb._keyHandler);
+  return lb;
 }
 function _openImgLightboxWithNav(src, alt, images, index) {
   const lb = document.createElement('div');
@@ -1827,6 +1853,9 @@ function _navigateLightbox(lb, direction) {
 function _closeImgLightbox(lb) {
   if(!lb || !lb.parentNode) return;
   document.removeEventListener('keydown', lb._keyHandler);
+  if(lb._mermaidResizeHandler && window && typeof window.removeEventListener === 'function'){
+    window.removeEventListener('resize', lb._mermaidResizeHandler);
+  }
   lb.style.animation = 'lb-in .12s ease reverse';
   setTimeout(() => lb.parentNode && lb.parentNode.removeChild(lb), 120);
 }
