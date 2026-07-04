@@ -31,9 +31,14 @@ def _media_blocks(kind):
     return blocks
 
 
+def _normalize_css(css):
+    return re.sub(r"\s+", "", css)
+
+
 def _media_block(kind, width_px, needle):
+    normalized_needle = _normalize_css(needle)
     for current_width, block in _media_blocks(kind):
-        if current_width == width_px and needle in block:
+        if current_width == width_px and normalized_needle in _normalize_css(block):
             return block
     raise AssertionError(f"Missing @media({kind}:{width_px}px) block containing {needle!r}")
 
