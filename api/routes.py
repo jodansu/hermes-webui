@@ -13622,7 +13622,7 @@ def handle_post(handler, parsed) -> bool:
             prune_session_from_index(sid)
         except Exception:
             logger.debug("Failed to prune deleted session from index: %s", sid, exc_info=True)
-        if sidecar_deleted:
+        if sidecar_deleted and not is_messaging_session:
             try:
                 _record_webui_deleted_session_tombstone(sid)
             except Exception:

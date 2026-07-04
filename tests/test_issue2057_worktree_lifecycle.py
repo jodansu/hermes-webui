@@ -1,5 +1,6 @@
-from types import SimpleNamespace
+import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import api.models as models
 import api.routes as routes
@@ -47,6 +48,45 @@ def _worktree_session(tmp_path, session_id):
     )
     s.save()
     return s, worktree
+
+
+def _make_state_db(path, sid, *, source="telegram"):
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            model TEXT,
+            message_count INTEGER DEFAULT 0,
+            started_at REAL,
+            title TEXT,
+            cwd TEXT
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            role TEXT,
+            content TEXT,
+            timestamp REAL
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions (id, source, model, message_count, started_at, title, cwd) "
+        "VALUES (?, ?, 'MiniMax-M3', 2, 1781024055.0, 'Telegram chat', ?)",
+        (sid, source, str(path.parent)),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', 'hi', 1781024055.0)",
+        (sid,),
+    )
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'assistant', 'hello', 1781024056.0)",
+        (sid,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_delete_worktree_session_reports_retained_worktree_without_cleanup(tmp_path, monkeypatch):
@@ -101,6 +141,42 @@ def test_delete_session_records_tombstone_when_state_db_delete_fails(tmp_path, m
     assert captured["payload"]["ok"] is True
     assert not (session_dir / f"{sid}.json").exists()
     assert sid in models._load_webui_deleted_session_tombstone()
+
+
+def test_delete_messaging_session_reopens_read_only_without_deleted_webui_tombstone(
+    tmp_path, monkeypatch
+):
+    session_dir = _isolate_session_store(tmp_path, monkeypatch)
+    sid = "telegramdelete1"
+    state_db = tmp_path / "state.db"
+    _make_state_db(state_db, sid)
+    monkeypatch.setattr(models, "_active_state_db_path", lambda: state_db)
+    session = Session(session_id=sid, title="Telegram chat")
+    session.save()
+    captured = _capture_post(monkeypatch, {"session_id": sid})
+    cli_meta = {
+        "session_id": sid,
+        "source_tag": "telegram",
+        "raw_source": "telegram",
+        "session_source": "messaging",
+    }
+    monkeypatch.setattr(routes, "_lookup_cli_session_metadata", lambda value: cli_meta)
+    monkeypatch.setattr(routes, "_is_messaging_session_id", lambda value: True)
+    delete_calls = []
+    monkeypatch.setattr(models, "delete_cli_session", lambda value: delete_calls.append(value))
+
+    assert routes.handle_post(object(), SimpleNamespace(path="/api/session/delete")) is True
+    sess, reason = routes._claim_or_synthesize_cli_session(sid)
+
+    assert captured["status"] == 200
+    assert captured["payload"]["ok"] is True
+    assert not (session_dir / f"{sid}.json").exists()
+    assert sid not in models._load_webui_deleted_session_tombstone()
+    assert delete_calls == []
+    assert reason == "not_claimable"
+    assert sess is not None
+    assert sess.read_only is True
+    assert sess.session_source == "messaging"
 
 
 def test_archive_worktree_session_reports_retained_worktree_without_cleanup(tmp_path, monkeypatch):
