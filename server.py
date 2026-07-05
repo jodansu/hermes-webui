@@ -109,14 +109,7 @@ from api.helpers import (
     _CLIENT_DISCONNECT_ERRORS,
 )
 from api.profiles import set_request_profile, clear_request_profile
-from api.routes import (
-    handle_delete,
-    handle_get,
-    handle_patch,
-    handle_post,
-    handle_put,
-    preflight_allow_origin,
-)
+from api.routes import handle_delete, handle_get, handle_patch, handle_post, handle_put, apply_cors_preflight_headers
 from api.startup import auto_install_agent_deps, fix_credential_permissions
 from api.updates import WEBUI_VERSION
 from api.crash_visibility import install_crash_visibility
@@ -442,21 +435,10 @@ class Handler(BaseHTTPRequestHandler):
         self._handle_write(handle_patch)
 
     def do_OPTIONS(self) -> None:
-        """Handle CORS preflight requests.
-
-        Echo the request Origin only when it is same-origin or allowlisted
-        via HERMES_WEBUI_ALLOWED_ORIGINS (same policy as the CSRF gate) —
-        never advertise `*`. A disallowed origin gets a 200 with no CORS
-        headers, which the browser treats as a preflight denial.
-        """
+        """Handle CORS preflight requests (headers emitted by api.routes)."""
         self._req_t0 = time.time()
-        allow_origin = preflight_allow_origin(self)
         self.send_response(200)
-        if allow_origin:
-            self.send_header("Access-Control-Allow-Origin", allow_origin)
-            self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        apply_cors_preflight_headers(self)
         self.end_headers()
 
     def do_DELETE(self) -> None:

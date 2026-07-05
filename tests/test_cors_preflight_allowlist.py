@@ -8,15 +8,35 @@ the same policy enforced for real requests.
 """
 
 from pathlib import Path
-from types import SimpleNamespace
 
-from api.routes import preflight_allow_origin
+from api.routes import apply_cors_preflight_headers
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class _FakeHandler:
+    """Captures send_header() calls so tests can assert emitted CORS headers."""
+
+    def __init__(self, headers):
+        self.headers = headers
+        self.sent = {}
+
+    def send_header(self, key, value):
+        self.sent[key] = value
+
+
 def _preflight(headers):
-    return preflight_allow_origin(SimpleNamespace(headers=headers))
+    """Return the Access-Control-Allow-Origin value the preflight would emit,
+    or '' when no CORS headers are emitted (disallowed / no-origin)."""
+    h = _FakeHandler(headers)
+    apply_cors_preflight_headers(h)
+    return h.sent.get("Access-Control-Allow-Origin", "")
+
+
+def _preflight_headers(headers):
+    h = _FakeHandler(headers)
+    apply_cors_preflight_headers(h)
+    return h.sent
 
 
 class TestPreflightAllowOrigin:
@@ -92,5 +112,27 @@ class TestServerNoWildcard:
     def test_server_source_has_no_wildcard_allow_origin(self):
         """Regression guard: the literal `*` Allow-Origin must not come back."""
         src = (ROOT / "server.py").read_text(encoding="utf-8")
+        routes_src = (ROOT / "api" / "routes.py").read_text(encoding="utf-8")
         assert '"Access-Control-Allow-Origin", "*"' not in src
-        assert "preflight_allow_origin" in src
+        assert '"Access-Control-Allow-Origin", "*"' not in routes_src
+        # server.py stays a thin dispatcher: the preflight logic lives in api/routes.
+        assert "apply_cors_preflight_headers" in src
+        assert "def apply_cors_preflight_headers" in routes_src
+
+    def test_allowed_preflight_sets_vary_origin(self):
+        """An allowed preflight must set Vary: Origin (correct for caching an
+        origin-conditional response)."""
+        sent = _preflight_headers({
+            "Origin": "http://127.0.0.1:8787",
+            "Host": "127.0.0.1:8787",
+        })
+        assert sent.get("Vary") == "Origin"
+        assert sent.get("Access-Control-Allow-Origin") == "http://127.0.0.1:8787"
+
+    def test_denied_preflight_emits_no_cors_headers(self):
+        """A disallowed origin gets zero CORS headers (browser preflight denial)."""
+        sent = _preflight_headers({
+            "Origin": "http://evil.com",
+            "Host": "127.0.0.1:8787",
+        })
+        assert sent == {}
