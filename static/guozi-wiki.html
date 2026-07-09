@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>国资穿透式监管 Wiki — 微信公众号文章导入清单</title>
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --card-bg: #ffffff;
+    --text: #212529;
+    --text-secondary: #6c757d;
+    --border: #dee2e6;
+    --accent: #1a5276;
+    --accent-light: #2980b9;
+    --tag-bg: #e8f4f8;
+    --tag-text: #1a5276;
+    --pending: #e67e22;
+    --imported: #27ae60;
+    --warning: #f39c12;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  
+  header {
+    background: linear-gradient(135deg, var(--accent), var(--accent-light));
+    color: white;
+    padding: 30px 20px;
+    border-radius: 12px;
+    margin-bottom: 24px;
+  }
+  header h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 8px; }
+  header .subtitle { font-size: 0.9rem; opacity: 0.85; }
+  
+  .stats-bar {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    flex: 1;
+    min-width: 140px;
+  }
+  .stat-card .label { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; }
+  .stat-card .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+  
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .toolbar input {
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    width: 280px;
+    max-width: 100%;
+  }
+  .toolbar select {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.85rem;
+    background: white;
+  }
+  
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card-bg);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  th {
+    background: #f1f3f5;
+    padding: 12px 14px;
+    text-align: left;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid var(--border);
+  }
+  td {
+    padding: 12px 14px;
+    font-size: 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tr:hover { background: #f8f9fa; }
+  
+  .article-id { font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); }
+  .article-title { font-weight: 500; }
+  .article-title a { color: var(--accent-light); text-decoration: none; cursor: pointer; }
+  .article-title a:hover { text-decoration: underline; }
+  
+  .status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .status-pending { background: #fef3e2; color: var(--pending); }
+  .status-imported { background: #e8f8f0; color: var(--imported); }
+  
+  .pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 6px;
+    margin-top: 24px;
+    flex-wrap: wrap;
+  }
+  .pagination button, .pagination span.page-num {
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: white;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+  .pagination button:hover:not(:disabled) { background: var(--accent-light); color: white; border-color: var(--accent-light); }
+  .pagination button.active { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
+  .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .pagination .ellipsis { padding: 8px 6px; color: var(--text-secondary); }
+  .pagination .info { font-size: 0.8rem; color: var(--text-secondary); margin-left: 10px; }
+  
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-secondary);
+  }
+
+  /* Article detail view */
+  #listView { display: block; }
+  #detailView { display: none; }
+  
+  .detail-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .back-btn {
+    padding: 8px 16px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    text-decoration: none;
+  }
+  .back-btn:hover { background: var(--accent-light); }
+  
+  .article-meta {
+    background: #f1f3f5;
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+  .article-meta span { margin-right: 20px; }
+  
+  .article-content {
+    background: var(--card-bg);
+    padding: 24px 28px;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    line-height: 1.8;
+  }
+  .article-content h1 { font-size: 1.5rem; margin-bottom: 16px; color: var(--accent); border-bottom: 2px solid var(--border); padding-bottom: 10px; }
+  .article-content h2 { font-size: 1.2rem; margin: 20px 0 10px; color: var(--accent-light); }
+  .article-content h3 { font-size: 1.05rem; margin: 16px 0 8px; }
+  .article-content p { margin-bottom: 12px; }
+  .article-content ul, .article-content ol { margin: 8px 0 16px 24px; }
+  .article-content li { margin-bottom: 4px; }
+  .article-content code { background: #f1f3f5; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; }
+  .article-content pre { background: #f1f3f5; padding: 16px; border-radius: 6px; overflow-x: auto; margin: 12px 0; }
+  .article-content blockquote { border-left: 3px solid var(--accent-light); padding: 8px 16px; margin: 12px 0; background: #f8f9fa; color: var(--text-secondary); }
+  .article-content hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+  .article-content a { color: var(--accent-light); }
+  .article-content table { box-shadow: none; margin: 12px 0; }
+  .article-content table th { background: #e9ecef; }
+  .article-content strong { color: var(--accent); }
+  
+  .loading { text-align: center; padding: 40px; color: var(--text-secondary); }
+  
+  footer {
+    text-align: center;
+    padding: 30px 20px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 20px;
+  }
+  
+  @media (max-width: 768px) {
+    .container { padding: 12px; }
+    header { padding: 20px 16px; }
+    th:nth-child(1), td:nth-child(1) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>国有穿透式监管 Wiki</h1>
+  <div class="subtitle">微信公众号文章导入清单 — 数据源：搜狗微信搜索</div>
+</header>
+
+<!-- List View -->
+<div id="listView">
+<div class="stats-bar" id="statsBar"></div>
+
+<div class="toolbar">
+  <input type="text" id="searchInput" placeholder="搜索文章标题..." oninput="renderPage()">
+  <select id="statusFilter" onchange="renderPage()">
+    <option value="all">全部状态</option>
+    <option value="pending">待获取</option>
+    <option value="imported">已导入</option>
+  </select>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:70px">编号</th>
+      <th>文章标题</th>
+      <th style="width:90px">状态</th>
+      <th style="width:100px">搜索日期</th>
+      <th style="width:70px">页码</th>
+    </tr>
+  </thead>
+  <tbody id="tableBody"></tbody>
+</table>
+
+<div id="emptyState" class="empty-state" style="display:none">
+  <p>没有匹配的文章</p>
+</div>
+
+<div class="pagination" id="pagination"></div>
+
+<footer>
+  国有穿透式监管 Wiki · 文章导入时间：<span id="importTime">—</span> · 数据来源：搜狗微信搜索 (weixin.sogou.com)
+</footer>
+</div>
+
+<!-- Detail View -->
+<div id="detailView">
+  <div class="detail-header">
+    <button class="back-btn" onclick="backToList()">返回清单</button>
+    <span style="font-weight:600;font-size:1.1rem;" id="detailTitle">—</span>
+  </div>
+  <div class="article-meta" id="detailMeta"></div>
+  <div class="article-content" id="detailContent">
+    <div class="loading">加载中...</div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const PER_PAGE = 50;
+let allArticles = [];
+let currentPage = 1;
+
+async function init() {
+  try {
+    const res = await fetch('articles.json');
+    const data = await res.json();
+    allArticles = data.articles;
+    document.getElementById('importTime').textContent = data.imported_at ? new Date(data.imported_at).toLocaleString('zh-CN') : '—';
+    updateStats();
+    renderPage();
+  } catch (e) {
+    document.getElementById('tableBody').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:40px;color:#e74c3c;">加载 articles.json 失败：' + e.message + '</td></tr>';
+  }
+}
+
+function updateStats() {
+  const total = allArticles.length;
+  const pending = allArticles.filter(a => a.status === 'pending').length;
+  const imported = allArticles.filter(a => a.status === 'imported').length;
+  document.getElementById('statsBar').innerHTML = `
+    <div class="stat-card"><div class="label">文章总数</div><div class="value">${total}</div></div>
+    <div class="stat-card"><div class="label">待获取</div><div class="value" style="color:var(--pending)">${pending}</div></div>
+    <div class="stat-card"><div class="label">已导入</div><div class="value" style="color:var(--imported)">${imported}</div></div>
+    <div class="stat-card"><div class="label">完成率</div><div class="value">${total > 0 ? Math.round(imported/total*100) : 0}%</div></div>
+  `;
+}
+
+function getFiltered() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  return allArticles.filter(a => {
+    if (status !== 'all' && a.status !== status) return false;
+    if (search && !a.title.toLowerCase().includes(search) && !a.id.toLowerCase().includes(search)) return false;
+    return true;
+  });
+}
+
+function renderPage(pageNum) {
+  if (pageNum) currentPage = pageNum;
+  const filtered = getFiltered();
+  const totalPages = Math.ceil(filtered.length / PER_PAGE) || 1;
+  if (currentPage > totalPages) currentPage = totalPages;
+  
+  const start = (currentPage - 1) * PER_PAGE;
+  const pageItems = filtered.slice(start, start + PER_PAGE);
+  
+  const tbody = document.getElementById('tableBody');
+  const emptyEl = document.getElementById('emptyState');
+  
+  if (pageItems.length === 0) {
+    tbody.innerHTML = '';
+    emptyEl.style.display = 'block';
+  } else {
+    emptyEl.style.display = 'none';
+    tbody.innerHTML = pageItems.map(a => `
+      <tr>
+        <td><span class="article-id">${a.id}</span></td>
+        <td><span class="article-title"><a onclick="viewArticle('${a.id}')">${escapeHtml(a.title)}</a></span></td>
+        <td><span class="status-badge status-${a.status}">${a.status === 'pending' ? '待获取' : '已导入'}</span></td>
+        <td>${a.search_date}</td>
+        <td>第${a.page}页</td>
+      </tr>
+    `).join('');
+  }
+  
+  renderPagination(totalPages, filtered.length);
+}
+
+function renderPagination(totalPages, totalItems) {
+  const pag = document.getElementById('pagination');
+  let html = '';
+  
+  html += `<button onclick="renderPage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}>上一页</button>`;
+  
+  const maxVisible = 7;
+  let startPage = Math.max(1, currentPage - Math.floor(maxVisible / 2));
+  let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+  if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+  
+  if (startPage > 1) {
+    html += `<span class="page-num" onclick="renderPage(1)">1</span>`;
+    if (startPage > 2) html += '<span class="ellipsis">…</span>';
+  }
+  
+  for (let i = startPage; i <= endPage; i++) {
+    html += `<span class="page-num${i === currentPage ? ' active' : ''}" onclick="renderPage(${i})">${i}</span>`;
+  }
+  
+  if (endPage < totalPages) {
+    if (endPage < totalPages - 1) html += '<span class="ellipsis">…</span>';
+    html += `<span class="page-num" onclick="renderPage(${totalPages})">${totalPages}</span>`;
+  }
+  
+  html += `<button onclick="renderPage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}>下一页</button>`;
+  html += `<span class="info">共 ${totalItems} 条 / ${totalPages} 页</span>`;
+  
+  pag.innerHTML = html;
+}
+
+// === Article Detail View ===
+
+function viewArticle(articleId) {
+  document.getElementById('listView').style.display = 'none';
+  document.getElementById('detailView').style.display = 'block';
+  document.getElementById('detailContent').innerHTML = '<div class="loading">加载中...</div>';
+  
+  const article = allArticles.find(a => a.id === articleId);
+  if (article) {
+    document.getElementById('detailTitle').textContent = article.id;
+    document.getElementById('detailMeta').innerHTML = `
+      <span>标题：<strong>${escapeHtml(article.title)}</strong></span>
+      <span>状态：${article.status === 'pending' ? '待获取' : '已导入'}</span>
+      <span>搜索日期：${article.search_date}</span>
+    `;
+  }
+  
+  fetch(`wechat-articles/${articleId}.md`)
+    .then(r => r.text())
+    .then(md => {
+      const { body, frontmatter } = parseMarkdown(md);
+      document.getElementById('detailContent').innerHTML = body;
+    })
+    .catch(e => {
+      document.getElementById('detailContent').innerHTML = '<p style="color:#e74c3c;">加载失败：' + e.message + '</p>';
+    });
+}
+
+function backToList() {
+  document.getElementById('detailView').style.display = 'none';
+  document.getElementById('listView').style.display = 'block';
+}
+
+// === Simple Markdown Parser ===
+
+function parseMarkdown(md) {
+  let frontmatter = {};
+  let body = md;
+  
+  // Parse YAML frontmatter (between --- markers)
+  const fmMatch = md.match(/^---\n([\s\S]*?)\n---\n/);
+  if (fmMatch) {
+    body = md.slice(fmMatch[0].length);
+    fmMatch[1].split('\n').forEach(line => {
+      const [key, ...vals] = line.split(':');
+      if (key && vals.length) frontmatter[key.trim()] = vals.join(':').trim();
+    });
+  }
+  
+  let html = body;
+  
+  // Code blocks (multi-line)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  
+  // Headers
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  
+  // Horizontal rule
+  html = html.replace(/^---$/gm, '<hr>');
+  
+  // Blockquote
+  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+  
+  // Unordered lists
+  html = html.replace(/^(\s*)[-*] (.+)$/gm, '<li>$2</li>');
+  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  // Fix nested ul
+  html = html.replace(/<\/ul>\s*<ul>/g, '');
+  
+  // Ordered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  
+  // Paragraphs (lines not starting with a tag)
+  html = html.replace(/^(?!<[a-z/])(.+)$/gm, '<p>$1</p>');
+  
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  
+  return { body: html, frontmatter };
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+init();
+</script>
+</body>
+</html>
