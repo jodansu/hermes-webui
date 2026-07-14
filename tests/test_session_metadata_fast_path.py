@@ -19,8 +19,16 @@ def test_messages_zero_skips_effective_model_resolution():
 
 def test_full_message_load_updates_viewed_count_after_metadata_fast_path():
     src = (ROOT / "static" / "sessions.js").read_text(encoding="utf-8")
+    compact = re.sub(r"\s+", "", src)
 
-    assert "_setSessionViewedCount(S.session.session_id, Number(data.session.message_count || 0));" in src
+    # The metadata-arrival viewed-count update now flows through
+    # _acknowledgeSessionVisit(), which calls _setSessionViewedCount() internally
+    # (and additionally syncs the polling snapshot + repaints so visiting a
+    # session reliably clears a stale sidebar unread dot) (#4946).
+    assert (
+        "_acknowledgeSessionVisit(S.session.session_id,Number(data.session.message_count||0),"
+        in compact
+    )
     assert "_setSessionViewedCount(sid, Number(S.session.message_count || msgs.length));" in src
 
 
@@ -64,9 +72,10 @@ def test_boot_does_not_block_session_restore_on_model_catalog():
 
     assert "if(s.default_model){" in src
     assert "window._defaultModel=s.default_model;" in src
-    assert "const _hydrateBootModelDropdown=()=>populateModelDropdown({preferProfileDefaultOnFreshBoot:true}).then" in src
+    assert "const _hydrateModelDropdown=({redirectIfUnauth=null}={})=>populateModelDropdown({" in src
     assert "window._modelDropdownReady=null;" in src
-    assert "window._ensureModelDropdownReady=_startBootModelDropdown;" in src
+    assert "window._startBootModelDropdown=_startBootModelDropdown;" in src
+    assert "window._ensureModelDropdownReady=_startModelDropdown;" in src
     assert "await populateModelDropdown()" not in src
 
 
@@ -80,7 +89,7 @@ def test_boot_primes_model_catalog_without_awaiting_it():
     """
     src = (ROOT / "static" / "boot.js").read_text(encoding="utf-8")
 
-    ensure_pos = src.index("window._ensureModelDropdownReady=_startBootModelDropdown;")
+    ensure_pos = src.index("window._ensureModelDropdownReady=_startModelDropdown;")
     prime_pos = src.index("Promise.resolve(_startBootModelDropdown()).catch(()=>{});", ensure_pos)
     session_restore_pos = src.index("await renderSessionList();", prime_pos)
 
@@ -100,18 +109,8 @@ def test_failed_boot_model_catalog_prime_is_retryable():
     src = (ROOT / "static" / "boot.js").read_text(encoding="utf-8")
     # #2726 parameterized the call: populateModelDropdown({preferProfileDefaultOnFreshBoot:true})
     # Match either signature shape — empty args (legacy) OR opts arg (post-#2726).
-    candidates = [
-        "const _hydrateBootModelDropdown=()=>populateModelDropdown().then",
-        "const _hydrateBootModelDropdown=()=>populateModelDropdown({preferProfileDefaultOnFreshBoot:true}).then",
-    ]
-    start = -1
-    for needle in candidates:
-        try:
-            start = src.index(needle)
-            break
-        except ValueError:
-            continue
-    assert start >= 0, "boot.js missing _hydrateBootModelDropdown wrapper around populateModelDropdown()"
+    needle = "const _hydrateModelDropdown=({redirectIfUnauth=null}={})=>populateModelDropdown({"
+    start = src.index(needle)
     end = src.index("const _startBootModelDropdown=()=>", start)
     block = src[start:end]
 
