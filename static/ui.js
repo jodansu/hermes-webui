@@ -2013,6 +2013,13 @@ function _mountMermaidViewer(svgEl, options = {}) {
     viewport,
     x: 0,
     y: 0,
+    pinching: false,
+    pinchStartDist: 0,
+    pinchStartScale: 1,
+    pinchStartCX: 0,
+    pinchStartCY: 0,
+    pinchStartX: 0,
+    pinchStartY: 0,
   };
   root._mermaidViewer = state;
 
@@ -2157,6 +2164,7 @@ function _mountMermaidViewer(svgEl, options = {}) {
   }
 
   function _onPointerDown(e){
+    if(state.pinching) return;
     if(e.button != null && e.button !== 0) return;
     state.dragging = true;
     state.dragged = false;
@@ -2171,6 +2179,7 @@ function _mountMermaidViewer(svgEl, options = {}) {
   }
 
   function _onPointerMove(e){
+    if(state.pinching) return;
     if(!state.dragging) return;
     const dx = (Number(e.clientX) || 0) - state.dragOriginX;
     const dy = (Number(e.clientY) || 0) - state.dragOriginY;
@@ -2191,6 +2200,7 @@ function _mountMermaidViewer(svgEl, options = {}) {
   }
 
   function _openViewerOnClick(e){
+    if(state.pinching) return;
     if(mode !== 'inline') return;
     if(state.dragged){
       state.dragged = false;
@@ -2201,6 +2211,53 @@ function _mountMermaidViewer(svgEl, options = {}) {
     openLightbox();
   }
 
+  function _touchDist(touches){
+    if(!touches || touches.length < 2) return 0;
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function _onTouchStart(e){
+    if(e.touches.length === 2){
+      state.pinching = true;
+      state.pinchStartDist = _touchDist(e.touches);
+      state.pinchStartScale = state.scale;
+      state.pinchStartX = state.x;
+      state.pinchStartY = state.y;
+      const rect = viewport.getBoundingClientRect();
+      state.pinchStartCX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - (rect.left || 0);
+      state.pinchStartCY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - (rect.top || 0);
+      _endPointerDrag();
+      if(e.preventDefault) e.preventDefault();
+    }
+  }
+
+  function _onTouchMove(e){
+    if(!state.pinching || e.touches.length < 2) return;
+    const rect = viewport.getBoundingClientRect();
+    const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - (rect.left || 0);
+    const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - (rect.top || 0);
+    const currDist = _touchDist(e.touches);
+    if(state.pinchStartDist > 0 && state.pinchStartScale > 0){
+      const rawScale = state.pinchStartScale * (currDist / state.pinchStartDist);
+      const boundedScale = Math.max(_minScale(), Math.min(_MERMAID_VIEWER_MAX_SCALE, rawScale));
+      const ratio = boundedScale / state.pinchStartScale;
+      state.scale = boundedScale;
+      state.x = cx - (state.pinchStartCX - state.pinchStartX) * ratio;
+      state.y = cy - (state.pinchStartCY - state.pinchStartY) * ratio;
+      _applyTransform();
+    }
+    if(e.preventDefault) e.preventDefault();
+  }
+
+  function _onTouchEnd(e){
+    if(e.touches.length < 2 && state.pinching){
+      state.pinching = false;
+      state.dragged = true;
+    }
+  }
+
   viewport.onpointerdown = _onPointerDown;
   viewport.onpointermove = _onPointerMove;
   viewport.onpointerup = _endPointerDrag;
@@ -2208,6 +2265,10 @@ function _mountMermaidViewer(svgEl, options = {}) {
   viewport.onpointerleave = _endPointerDrag;
   viewport.onwheel = _zoomFromWheel;
   viewport.onclick = _openViewerOnClick;
+  viewport.addEventListener('touchstart', _onTouchStart, {passive: false});
+  viewport.addEventListener('touchmove', _onTouchMove, {passive: false});
+  viewport.addEventListener('touchend', _onTouchEnd);
+  viewport.addEventListener('touchcancel', function _onTouchCancel(){ state.pinching = false; });
   root.onclick = e => e.stopPropagation();
   state.fit = _fitViewer;
   state.reset = _resetViewer;
@@ -10738,7 +10799,7 @@ function _transparentToolSummary(tc){
   // with only {workdir} or an unknown tool with {mode:"dry-run"}) must yield an
   // EMPTY collapsed preview rather than dumping a raw arg snippet — that keeps the
   // collapsed row quiet and consistent with the no-args case (#4658 review).
-  const target=typeof _toolVisibleTargetLabel==='function'?_toolVisibleTargetLabel(tc,{limit:160}):'';
+  const target=typeof _toolVisibleTargetLabel==='function'?_toolVisibleTargetLabel(tc,{limit:160,rangeFirst:true}):'';
   if(target) return target;
   return '';
 }
@@ -16719,6 +16780,20 @@ function _toolTargetLabel(tc){
   else raw=a.cmd||a.command||a.path||a.file_path||a.file||a.uri||a.url||a.query||a.pattern||a.dir||a.task||a.name||'';
   return _redactToolTargetLabel(_decodeToolLabelEntities(String(raw).split('\n')[0].trim()));
 }
+function _toolReadRangeLabel(tc){
+  const name=String(tc&&tc.name||'').toLowerCase().replace(/[^a-z0-9]+/g,'_');
+  if(name!=='read_file') return '';
+  const args=tc&&tc.args||{};
+  const offset=args.offset;
+  if(!Number.isSafeInteger(offset)||offset<=0) return '';
+  const limit=args.limit;
+  if(limit===undefined) return `L${offset}`;
+  if(!Number.isSafeInteger(limit)||limit<=0) return '';
+  if(limit===1) return `L${offset}`;
+  const span=limit-1;
+  if(offset>Number.MAX_SAFE_INTEGER-span) return '';
+  return `L${offset}-${offset+span}`;
+}
 function _toolFullCommandLabel(tc){
   // Full (multi-line) shell command for the EXPANDED detail lead. Mirrors the
   // shell raw-extraction in _toolTargetLabel but WITHOUT the .split('\n')[0]
@@ -16733,7 +16808,12 @@ function _toolVisibleTargetLabel(tc, opts){
   const target=_toolTargetLabel(tc);
   if(!target) return '';
   const kind=_toolActionKind(tc);
-  if(kind==='read'||kind==='write') return _shortToolLabel(_toolPathBasename(target)||target, opts.limit||112);
+  if(kind==='read'||kind==='write'){
+    let text=_toolPathBasename(target)||target;
+    const range=kind==='read'?_toolReadRangeLabel(tc):'';
+    if(range) text=opts.rangeFirst?`${range} · ${text}`:`${text} · ${range}`;
+    return _shortToolLabel(text, opts.limit||112);
+  }
   if(kind==='skill'){
     const suffix=_toolI18n('tool_target_skill_suffix', 'skill');
     const text=target.toLowerCase().endsWith(String(suffix).toLowerCase())?target:`${target} ${suffix}`;
