@@ -280,3 +280,55 @@ def test_lru_eviction_closes_evicted_session_db():
     assert db1.close_calls == 1, "evicted agent's SessionDB must be closed exactly once"
     assert db2.close_calls == 0, "remaining agents' SessionDBs must not be touched"
     assert db3.close_calls == 0
+
+
+# ── 6: self-heal path must not reuse a CLOSED handle when the rebuild fails ──
+
+
+def _import_replace_helper():
+    """Import the real credential-self-heal SessionDB replacer."""
+    try:
+        from api.streaming import _replace_session_db_in_kwargs  # type: ignore
+    except Exception as exc:
+        pytest.skip(f"api.streaming not importable: {exc}")
+    return _replace_session_db_in_kwargs
+
+
+def test_replace_degrades_to_none_when_rebuild_fails_and_old_is_closed(monkeypatch):
+    """Credential self-heal regression (Codex gate finding on PR #6143).
+
+    When ``_build_session_db_for_stream`` returns None (rebuild failed) AND the
+    prior handle is already CLOSED, ``_replace_session_db_in_kwargs`` must leave
+    ``agent_kwargs['session_db'] = None`` — as master did — so the rebuilt agent
+    lazily reinitialises. Retaining the closed handle (the pre-fix behaviour)
+    makes every persist/search fail with
+    ``'NoneType' object has no attribute 'execute'`` while the chat continues.
+    """
+    import api.streaming as streaming
+
+    _replace = _import_replace_helper()
+    monkeypatch.setattr(streaming, "_build_session_db_for_stream", lambda _p: None)
+
+    old_db = _MockSessionDB("old", open_=False)  # already closed
+    kwargs = {"session_db": old_db}
+    result = _replace(kwargs, "/tmp/does-not-matter.db")
+
+    assert result is None, "must not hand back a closed handle when rebuild fails"
+    assert kwargs["session_db"] is None, "kwargs must degrade to None (clean lazy reinit)"
+
+
+def test_replace_keeps_open_handle_when_rebuild_fails(monkeypatch):
+    """Inverse: a still-OPEN prior handle (held by live subagents) is retained
+    when the rebuild fails — do not orphan a live shared connection."""
+    import api.streaming as streaming
+
+    _replace = _import_replace_helper()
+    monkeypatch.setattr(streaming, "_build_session_db_for_stream", lambda _p: None)
+
+    old_db = _MockSessionDB("old", open_=True)  # still live (subagents hold it)
+    kwargs = {"session_db": old_db}
+    result = _replace(kwargs, "/tmp/does-not-matter.db")
+
+    assert result is old_db, "a live handle must be kept when the rebuild fails"
+    assert kwargs["session_db"] is old_db
+    assert old_db.close_calls == 0, "must not close a live shared handle"

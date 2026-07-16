@@ -6350,7 +6350,16 @@ def _replace_session_db_in_kwargs(agent_kwargs, state_db_path):
     _old_session_db = agent_kwargs.get("session_db")
     _next_session_db = _build_session_db_for_stream(state_db_path)
     if _next_session_db is None:
-        return _old_session_db
+        # Replacement construction failed. Keep the prior handle only if it is
+        # still open (live subagents may hold it by reference); otherwise
+        # degrade cleanly to None — as master did — so the rebuilt agent lazily
+        # reinitialises its SessionDB instead of reusing a closed handle and
+        # failing every persist/search with
+        # "'NoneType' object has no attribute 'execute'".
+        if _session_db_is_open(_old_session_db):
+            return _old_session_db
+        agent_kwargs["session_db"] = None
+        return None
     if _session_db_is_open(_old_session_db):
         # Keep the live handle; discard the unused new one.
         try:
