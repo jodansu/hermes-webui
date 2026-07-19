@@ -3090,6 +3090,48 @@ def _truncate_journal_snapshot_value(value, *, limit: int = 120):
     return value
 
 
+def _run_journal_snapshot_recovery_args(payload: dict | None):
+    if not isinstance(payload, dict):
+        return {}
+    args = payload.get("args")
+    return bound_run_journal_snapshot_args(args)
+
+
+def _run_journal_snapshot_arg_detail_score(value) -> int:
+    if value in (None, "", [], {}):
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(
+            len(str(key)) + _run_journal_snapshot_arg_detail_score(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return sum(_run_journal_snapshot_arg_detail_score(item) for item in value)
+    return 1
+
+
+def _run_journal_snapshot_merge_args(existing, incoming):
+    if not incoming:
+        return existing, False
+    if not isinstance(existing, dict) or not existing:
+        return incoming, True
+    if not isinstance(incoming, dict):
+        return existing, False
+    merged = copy.deepcopy(existing)
+    changed = False
+    for key, value in incoming.items():
+        current = merged.get(key)
+        if key not in merged or (
+            _run_journal_snapshot_arg_detail_score(value)
+            > _run_journal_snapshot_arg_detail_score(current)
+        ):
+            merged[key] = value
+            changed = True
+    return merged, changed
+
+
 def _run_journal_live_snapshot(stream_id: str | None, *, handler=None) -> dict | None:
     stream_id = str(stream_id or "").strip()
     if not stream_id:
@@ -3146,6 +3188,12 @@ def _run_journal_live_snapshot(stream_id: str | None, *, handler=None) -> dict |
             call_id = _run_journal_snapshot_tool_id(call)
             if (tool_id and call_id == tool_id) or (not tool_id and name and call.get("name") == name):
                 call["done"] = True
+                merged_args, args_changed = _run_journal_snapshot_merge_args(
+                    call.get("args"),
+                    _run_journal_snapshot_recovery_args(payload),
+                )
+                if args_changed:
+                    call["args"] = merged_args
                 if payload.get("preview") is not None:
                     call["snippet"] = str(payload.get("preview") or "")
                     call["preview"] = call.get("preview") or call["snippet"]
@@ -3161,7 +3209,7 @@ def _run_journal_live_snapshot(stream_id: str | None, *, handler=None) -> dict |
             "name": name,
             "preview": str(payload.get("preview") or ""),
             "snippet": str(payload.get("preview") or ""),
-            "args": _truncate_journal_snapshot_value(payload.get("args") or {}),
+            "args": _run_journal_snapshot_recovery_args(payload),
             "done": True,
             "_live": True,
             "_journal_snapshot": True,
@@ -3231,7 +3279,7 @@ def _run_journal_live_snapshot(stream_id: str | None, *, handler=None) -> dict |
             call = {
                 "name": name,
                 "preview": str(payload.get("preview") or ""),
-                "args": _truncate_journal_snapshot_value(payload.get("args") or {}),
+                "args": _run_journal_snapshot_recovery_args(payload),
                 "done": False,
                 "_live": True,
                 "_journal_snapshot": True,
@@ -8446,6 +8494,38 @@ def _message_window_for_display(messages, msg_limit=None, msg_before=None, expan
 
 
 _LIMITED_TOOL_CONTENT_MAX_CHARS = 4096
+# Server-side ceiling on the ?msg_limit= tail-window size. A client could
+# otherwise request msg_limit=1000000 and force the server to assemble and
+# serialize an unbounded message payload (the frontend's own pagination grows
+# by ~30 at a time, with one outline-jump path asking for 9999). The ceiling is
+# generous — far above any legitimate visible-row window — so real pagination is
+# unaffected; it only caps the pathological/oversized request. When the request
+# exceeds the ceiling the response is silently clamped and _messages_truncated
+# is set (the existing truncation signal already covers "more rows exist").
+_MAX_MSG_LIMIT = 500
+
+
+def _parse_msg_limit(raw):
+    """Parse and clamp the ``?msg_limit=`` query value.
+
+    Returns a positive int clamped to ``[1, _MAX_MSG_LIMIT]``, or ``None`` when
+    the value is absent/empty/malformed (the bare no-``msg_limit`` path, which
+    intentionally returns the full transcript for callers that need it).
+    Extracted from the handler so the clamp expression has direct test coverage.
+    """
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(value, _MAX_MSG_LIMIT))
+
+
+# If a sidecar JSON file exceeds this threshold, the display-path tail
+# optimization fires regardless of message count.  Sessions with few messages
+# but large tool outputs (multi-MB JSON) should not force a full-scan merge.
+_SIDECAR_BYTE_TAIL_THRESHOLD = 500_000  # 500 KB
 # Defensive row backstop for the GET /api/session display path's state.db read.
 # This is NOT a semantic window (the display window counts visible rows
 # post-reconciliation via _message_window_for_display); it is a safety net so a
@@ -8565,6 +8645,16 @@ def _limited_webui_messages_for_display_with_sidecar(session, sidecar_messages, 
     )
 
 
+def _sidecar_file_exceeds_threshold(session_id, threshold_bytes) -> bool:
+    """Check if the sidecar JSON file for ``session_id`` exceeds ``threshold_bytes``."""
+    from api.config import SESSION_DIR
+    try:
+        p = SESSION_DIR / f"{session_id}.json"
+        return os.path.isfile(p) and os.path.getsize(p) > threshold_bytes
+    except Exception:
+        return False
+
+
 def _state_db_since_timestamp_for_limited_display(session, msg_limit, msg_before=None):
     """Return (timestamp floor, sidecar messages) for bounded state.db tail reads.
 
@@ -8595,7 +8685,9 @@ def _state_db_since_timestamp_for_limited_display(session, msg_limit, msg_before
         return None, sidecar_messages
     raw_budget = max(300, limit * 10)
     if len(sidecar_messages) <= raw_budget:
-        return None, sidecar_messages
+        _sid = getattr(session, "session_id", "") or ""
+        if not _sid or not _sidecar_file_exceeds_threshold(_sid, _SIDECAR_BYTE_TAIL_THRESHOLD):
+            return None, sidecar_messages
 
     floor = min(sidecar_timestamps[-raw_budget:])
     sidecar_before_count = sum(1 for ts in sidecar_timestamps if ts < floor)
@@ -9490,6 +9582,7 @@ from api.streaming import (
 from api.gateway_chat import _run_gateway_chat_streaming, webui_gateway_chat_enabled
 from api.run_journal import (
     _parse_run_journal_event_id as _shared_parse_run_journal_event_id,
+    bound_run_journal_snapshot_args,
     find_run_summary,
     read_run_events,
     read_session_run_events,
@@ -12400,11 +12493,13 @@ def handle_get(handler, parsed) -> bool:
         # transcript rows. Hidden tool-result rows do not consume the budget;
         # they are included only when they sit inside the selected window and
         # are bounded before serialization. Older rows load on-demand.
-        _msg_limit = query.get("msg_limit", [None])[0]
-        try:
-            msg_limit = max(1, int(_msg_limit)) if _msg_limit else None
-        except (ValueError, TypeError):
-            msg_limit = None
+        # Clamp to _MAX_MSG_LIMIT so an oversized request (e.g. msg_limit=9999
+        # from an outline jump, or a hostile value) can't force an unbounded
+        # payload; the existing _messages_truncated signal covers the clamped
+        # case (the client sees there are more rows than returned). Parsing +
+        # clamping live in _parse_msg_limit so the expression has direct test
+        # coverage; None means the bare no-msg_limit path (full transcript).
+        msg_limit = _parse_msg_limit(query.get("msg_limit", [None])[0])
         # ?msg_before=N — 0-based index into the full message array.
         # Returns messages before this index (for scroll-to-top lazy loading).
         # Combined with msg_limit for paging.
@@ -12739,6 +12834,7 @@ def handle_get(handler, parsed) -> bool:
             _truncated = load_messages and msg_limit is not None and _messages_offset > 0
             raw["_messages_truncated"] = _truncated
             raw["_messages_offset"] = _messages_offset
+            raw["_msg_limit_max"] = _MAX_MSG_LIMIT
             _t4 = _time.monotonic()
             if _diag: _diag.stage("t4_after_compact_and_merge")
             if effective_model:
