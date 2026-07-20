@@ -5,6 +5,8 @@
 
 ### Changed
 
+- **The repository is now pip-installable with standard packaging metadata.** `pyproject.toml` gains a `[build-system]` + `[project]` section (setuptools + setuptools-scm) so packagers and distros can `pip install .` and get a proper wheel (`api` + `static` bundled). The normal `bootstrap.py` / `start.sh` / `ctl.sh` source-checkout launch path is unchanged. setuptools-scm writes its version to a separate `api/_scm_version.py` (not the Docker-owned `api/_version.py`), and the runtime version detector reads it as an explicit fallback (normalizing the PEP 440 value to a `v…` form) so an installed wheel reports a real version instead of `unknown` — Docker and git-checkout version resolution are byte-identical to before. Thanks @rodboev. (#6337, #2695)
+
 - **Transparent Stream can now hide its per-event timestamp chips.** A new opt-in setting (Settings → the Transparent Stream activity area) lets you suppress the small per-event timestamp chips inside Transparent Stream while keeping the assistant response footer time visible — narrowing the visual noise without removing timing information entirely. Default is unchanged (chips shown). Thanks @rodboev. (#6130, #6099)
 
 - **Internal: removed a dead `rowIndex` parameter from the settled-scene row projector.** `attachLiveStream`'s `pushRow` helper carried an unused positional index left over from before final-segment eligibility moved to a row-identity `WeakSet`; dropping it is a pure no-op refactor (differential execution confirms byte-identical settled scenes — ordering, dedupe, final-prefix suppression, and sequence assignment all unchanged). Thanks @webtecnica. (#6258)
@@ -14,6 +16,8 @@
 - **The busy-time send behavior is now called "Default message mode," and new installs default to Steer.** The Settings → Preferences control formerly labeled "Busy input mode" is renamed to "Default message mode," and a fresh install now defaults to **Steer** (inject a mid-turn correction without interrupting) instead of Queue. Your existing choice is preserved — if you ever saved settings, your current mode (Queue/Interrupt/Steer) is migrated as-is and unchanged; only never-configured installs pick up the new Steer default. The saved preference still survives a reload or a brief server outage (the localStorage mirror from the previous release is intact). Thanks @rodboev. (#5162, #5145)
 
 ### Fixed
+
+- **Content search no longer evicts your open sessions from the cache.** A content search scans many sessions, and each scan used to promote/cold-load sessions into the in-memory LRU — evicting the sessions you actually have open. Search now reads through a scan-only accessor that keeps the same disk-freshness, journal-recovery, and state.db reconciliation (so recent content stays searchable) but doesn't disturb the working-set cache. Thanks @ai-ag2026. (#6084, #6083)
 
 - **Watching the same terminal from two tabs no longer splits the output stream.** Terminal output is now broadcast to every subscribed viewer instead of draining from one shared queue, so a second tab (or a reconnect) sees the full stream rather than a random half. SSE responses carry event `id:`s and a reconnecting viewer replays only events after its `Last-Event-ID` cursor (fresh viewers still get the full bounded backlog). Thanks @ai-ag2026. (#5836)
 
