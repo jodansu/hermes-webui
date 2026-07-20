@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import sys
+import time
 import types
 import pytest
 from unittest import mock
@@ -12,6 +13,19 @@ import api.config as config
 import api.models as models
 import api.streaming as streaming
 from api.models import Session
+
+
+@pytest.mark.parametrize("started_at", [None, 0, -1, "invalid", float("nan"), float("inf")])
+def test_terminal_turn_duration_omits_invalid_origin(started_at):
+    session = types.SimpleNamespace(pending_started_at=started_at)
+
+    assert streaming._terminal_turn_duration(session, now=100.0) is None
+
+
+def test_terminal_turn_duration_freezes_valid_origin():
+    session = types.SimpleNamespace(pending_started_at=88.7654)
+
+    assert streaming._terminal_turn_duration(session, now=100.0) == 11.235
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +125,7 @@ def test_silent_failure_preserves_partials(tmp_path):
     """Test that a silent failure (agent returns no assistant reply) preserves partial streamed text."""
     fake_session = Session(session_id="test_sess_silent", title="Test Session")
     fake_session.pending_user_message = "What is python?"
+    fake_session.pending_started_at = time.time() - 12
     fake_session.active_stream_id = "test_stream_silent"
     fake_session.save()
     models.SESSIONS["test_sess_silent"] = fake_session
@@ -161,12 +176,14 @@ def test_silent_failure_preserves_partials(tmp_path):
 
     err_msg = saved.messages[-1]
     assert err_msg.get("_error") is True
+    assert err_msg.get("_turnDuration", 0) >= 12
 
 
 def test_exception_preserves_partials(tmp_path):
     """Test that an unhandled exception preserves partial streamed text."""
     fake_session = Session(session_id="test_sess_exc", title="Test Session")
     fake_session.pending_user_message = "Exception test"
+    fake_session.pending_started_at = time.time() - 9
     fake_session.active_stream_id = "test_stream_exc"
     fake_session.save()
     models.SESSIONS["test_sess_exc"] = fake_session
@@ -205,6 +222,7 @@ def test_exception_preserves_partials(tmp_path):
     err_msg = saved.messages[-1]
     assert err_msg.get("_error") is True
     assert "Fake provider crash!" in err_msg.get("content", "")
+    assert err_msg.get("_turnDuration", 0) >= 9
 
 
 def test_empty_partials_do_not_create_spurious_messages(tmp_path):
