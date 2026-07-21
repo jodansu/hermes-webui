@@ -6512,7 +6512,10 @@ def _terminal_turn_duration(session, *, now: float | None = None) -> float | Non
         return None
     if not math.isfinite(started) or not math.isfinite(ended) or started <= 0:
         return None
-    return round(max(0.0, ended - started), 3)
+    elapsed = ended - started
+    if elapsed < 0:
+        return None
+    return round(elapsed, 3)
 
 
 def _build_partial_message(content_text, reasoning_text, tool_calls) -> dict | None:
