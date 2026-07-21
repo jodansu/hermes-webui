@@ -3966,7 +3966,6 @@ const LOCALES = {
     workspace_close_preview: 'プレビューを閉じる',
     workspace_files_tab: 'ファイル',
     workspace_artifacts_tab: 'アーティファクト',
-    workspace_artifact_source_session: 'セッション',
     workspace_hidden_files_visible: '隠しファイル表示中',
     workspace_hidden_files_visible_title: '隠しファイルが表示されています — クリックでオプション',
     workspace_options: 'ワークスペースオプション',
