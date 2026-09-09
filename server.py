@@ -655,6 +655,47 @@ def main() -> None:
     except Exception as e:
         print(f'[!!] WARNING: bg_task_complete drain failed to start: {e}', flush=True)
 
+    # Self-healing watcher: auto-restart WebUI when the Agent checkout changes.
+    # The revision guard (api.agent_runtime) raises on chat actions after an
+    # agent update, but that leaves the user stuck until a manual restart.
+    # This thread polls the guard periodically and force-restarts the process
+    # (systemd Restart=always brings it back) before any user action fails.
+    def _start_agent_revision_watcher():
+        import time as _time
+
+        def _watch():
+            try:
+                from api import agent_runtime
+            except Exception:
+                return
+            # Ensure the revision baseline is captured (imports AIAgent lazily).
+            try:
+                agent_runtime._capture_loaded_agent_revision()
+            except Exception:
+                pass
+            while True:
+                _time.sleep(30)
+                try:
+                    agent_runtime.ensure_agent_runtime_current()
+                except agent_runtime.AgentRuntimeChangedError:
+                    print('[auto-restart] Agent revision changed — restarting WebUI', flush=True)
+                    try:
+                        _log_shutdown_audit("agent_revision_changed")
+                    except Exception:
+                        pass
+                    os._exit(0)
+                except Exception:
+                    pass
+
+        try:
+            t = threading.Thread(target=_watch, daemon=True)
+            t.start()
+            print('[ok] Agent revision watcher started (auto-restart on update)', flush=True)
+        except Exception as e:
+            print(f'[!!] WARNING: Agent revision watcher failed: {e}', flush=True)
+
+    _start_agent_revision_watcher()
+
     try:
         from api.background_process import start_session_channel_reaper
         if start_session_channel_reaper():
