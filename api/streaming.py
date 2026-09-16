@@ -2556,7 +2556,7 @@ def _aiagent_import_error_detail() -> str:
     lines.append('  Full troubleshooting: docs/troubleshooting.md ("AIAgent not available")')
     return "\n".join(lines)
 from api.models import get_session, title_from
-from api.workspace import set_last_workspace
+from api.workspace import _resolve_path
 
 # Fields that are safe to send to LLM provider APIs.
 # Everything else (attachments, timestamp, _ts, etc.) is display-only
@@ -3385,7 +3385,7 @@ def _resolve_image_input_mode(cfg: dict, active_provider: str = "", active_model
     return "native"
 
 
-def _build_native_multimodal_message(workspace_ctx: str, msg_text: str, attachments, workspace: str, *, cfg: dict = None, active_provider: str = "", active_model: str = "", requested_provider: str = ""):
+def _build_native_multimodal_message(workspace_ctx: str, msg_text: str, attachments, workspace: str, *, cfg: dict = None, active_provider: str = "", active_model: str = "", requested_provider: str = "", profile: str | Path | None = None):
     """Build native multimodal content parts for current-turn image uploads.
 
     WebUI uploads files into the active workspace. For image files, pass the
@@ -3405,7 +3405,7 @@ def _build_native_multimodal_message(workspace_ctx: str, msg_text: str, attachme
         return workspace_ctx + msg_text
 
     parts = [{'type': 'text', 'text': workspace_ctx + msg_text}]
-    workspace_root = Path(workspace).expanduser().resolve()
+    workspace_root = _resolve_path(workspace, profile=profile)
     # Stage-361 maintainer fix (Opus SHOULD-FIX): chat uploads from #2319 now
     # land in ~/.hermes/webui/attachments/<sid>/ (outside workspace_root by
     # design). The pre-existing `path.relative_to(workspace_root)` guard would
@@ -4011,11 +4011,21 @@ def _looks_like_current_user_turn(msg, msg_text) -> bool:
     return any(" ".join(str(candidate or '').split()) == needle for candidate in candidates)
 
 
-def _first_exchange_snippets(messages):
+def _first_exchange_snippets(messages, *, scan_past_consecutive_users: bool = False):
     """Return (first_user_text, first_assistant_text) snippets for title generation.
 
     Prefer the first substantive assistant answer in the opening exchange,
     skipping empty placeholders and assistant tool-call preambles.
+
+    ``scan_past_consecutive_users`` (opt-in) keeps scanning past consecutive
+    opening user rows (queued first turns) until the first COMPLETE user+assistant
+    pair — needed by the manual "Regenerate title" path (#7543), which otherwise
+    aborted at the second user row with an empty assistant snippet and silently
+    persisted the local fallback. It defaults False so the automatic in-stream
+    background-title path keeps its exact prior behavior (a transcript with no
+    assistant text before the second user row yields an empty assistant snippet,
+    which _background_title_generation_inputs treats as "not yet eligible" — the
+    stream teardown then emits stream_end on its synchronous path unchanged).
     """
     user_text = ''
     asst_text = ''
@@ -4025,11 +4035,14 @@ def _first_exchange_snippets(messages):
         role = m.get('role')
         if role == 'user':
             candidate = _strip_thinking_markup(_title_exchange_input_text(m.get('content')))
-            if not user_text and candidate:
+            if candidate and not user_text:
                 user_text = candidate
-                continue
-            if user_text and candidate:
+            elif user_text and candidate and not scan_past_consecutive_users:
+                # Legacy/default behavior: a second populated user row before any
+                # assistant text ends the opening exchange (asst_text stays empty).
                 break
+            # When scan_past_consecutive_users is set, keep going past consecutive
+            # user rows (#7543) until the first user+assistant pair.
         elif role == 'assistant' and user_text:
             candidate = _message_text(m.get('content'))
             # Skip tool-call preambles *only* when content is empty or looks
@@ -5098,7 +5111,12 @@ def generate_session_title_for_session(session, *, prefer_latest: bool = False, 
     if prefer_latest:
         user_text, assistant_text = _latest_exchange_snippets(messages)
     else:
-        user_text, assistant_text = _first_exchange_snippets(messages)
+        # Manual "Regenerate title" (#7543): scan past consecutive opening user
+        # rows to the first complete user+assistant pair, so a transcript that
+        # opens with queued user turns still reaches the aux LLM instead of
+        # silently persisting the local fallback. The automatic in-stream path
+        # keeps the default (no scan-past) so its stream teardown is unchanged.
+        user_text, assistant_text = _first_exchange_snippets(messages, scan_past_consecutive_users=True)
     if not user_text:
         return None, 'empty_user_message', ''
     from api import profiles as profiles_api
@@ -9448,19 +9466,19 @@ def _run_agent_streaming(
         # Resolved the same way as `s.workspace` below so the bound cwd and the
         # session's own record cannot disagree. Guarded: a turn must not die
         # here because a workspace path is malformed.
+        s = get_session(session_id)
         try:
-            _turn_workspace_cwd = str(Path(workspace).expanduser().resolve())
+            _turn_workspace_cwd = str(_resolve_path(workspace, profile=getattr(s, 'profile', None)))
         except Exception:
             _turn_workspace_cwd = ""
             logger.debug("per-turn workspace cwd resolve failed", exc_info=True)
         _turn_session_identity_tokens = _set_turn_session_identity(
             session_id, workspace=_turn_workspace_cwd
         )
-        s = get_session(session_id)
         _turn_pending_source = getattr(s, 'pending_user_source', None) or 'webui'
         _active_turn_identity = _active_turn_authority(s, stream_id, msg_text)
         update_active_run(stream_id, phase="running", session_id=session_id)
-        s.workspace = str(Path(workspace).expanduser().resolve())
+        s.workspace = _turn_workspace_cwd
         _last_persisted_model = None
         _last_persisted_provider = None
         _turn_owns_persisted_model = False
@@ -10988,7 +11006,7 @@ def _run_agent_streaming(
             _agent_msg_text = msg_text
             if _process_notifications:
                 _agent_msg_text = "\n\n".join([*_process_notifications, msg_text]).strip()
-            user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg, active_provider=(resolved_provider or ""), active_model=(resolved_model or ""), requested_provider=(_session_requested_provider or ""))
+            user_message = _build_native_multimodal_message(workspace_ctx, _agent_msg_text, attachments, workspace, cfg=_cfg, active_provider=(resolved_provider or ""), active_model=(resolved_model or ""), requested_provider=(_session_requested_provider or ""), profile=(getattr(s, "profile", None) or Path(_profile_home)))
             _persistent_state_before = _persistent_state_snapshot(_profile_home)
             _run_conversation_kwargs = _build_run_conversation_kwargs(
                 agent.run_conversation,
@@ -11041,6 +11059,10 @@ def _run_agent_streaming(
                     active_provider=(resolved_provider or ""),
                     active_model=(resolved_model or ""),
                     requested_provider=(_session_requested_provider or ""),
+                    # Legacy fallback wraps the home STRING in Path: string
+                    # profiles are logical ids only (round-5 grammar gate),
+                    # explicit homes must arrive as Path values.
+                    profile=(getattr(s, "profile", None) or Path(_profile_home)),
                 )
                 _run_conversation_kwargs["user_message"] = user_message
             _result_partial_pre_call_context = list(_previous_context_messages)
