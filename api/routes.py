@@ -10488,6 +10488,11 @@ def _pre_compression_continuation_session_id(session) -> str | None:
     exists either in memory or on disk. Follow bounded snapshot-to-snapshot hops
     so repeated compression still lands on the latest visible continuation.
     """
+    from api.compression_continuation import durable_compression_continuation
+
+    sealed, tip = durable_compression_continuation(session)
+    if sealed:
+        return tip
     if not getattr(session, "pre_compression_snapshot", False):
         return None
     sid = _safe_first(getattr(session, "session_id", None))
@@ -20482,7 +20487,22 @@ def _session_media_token_allows_path(sid: str, target: Path, allowed_mimes: set[
         role = str(message.get("role") or "").strip().lower()
         if role == "user":
             continue
-        text = _message_content_text(message.get("content"))
+        # #7565: also inspect typed public assistant commentary carried in
+        # ``codex_message_items`` (Agent phase: "commentary"). The
+        # concatenated text below is the union of the existing
+        # top-level extraction and the new commentary-only helper, so
+        # the existing exact-path, owning-session, safe-MIME, URL,
+        # hard-denied, and symlink guards are unchanged. The
+        # commentary helper is fail-closed (outer role must be
+        # assistant; item type/role/phase all constrained; only
+        # textual output_text parts are read).
+        from api.media_snapshots import codex_commentary_text
+        text = "\n".join(
+            fragment for fragment in (
+                _message_content_text(message.get("content")),
+                codex_commentary_text(message),
+            ) if fragment
+        )
         if "MEDIA:" not in text:
             continue
         for ref in _MEDIA_TOKEN_RE.findall(text):
@@ -24340,6 +24360,16 @@ def _handle_chat_start(handler, body, diag=None):
                 s.profile = requested_profile
             else:
                 return bad(handler, "Session not found", 404)
+        # Resolve durable rotations before any workspace/model/pending mutation.
+        # GET navigation adopts the tip; POST never silently replays a user turn.
+        from api.compression_continuation import durable_compression_continuation
+        sealed, continuation = durable_compression_continuation(s)
+        if sealed:
+            return j(handler, {
+                "error": "This session was compressed. Open its continuation before sending.",
+                "code": "session_rotated",
+                "continuation_session_id": continuation,
+            }, status=409)
         regeneration = None
         if body.get("regenerate") is True:
             if any(key in body for key in ("message", "attachments", "keep_count", "prompt", "prompt_index")):
@@ -25011,7 +25041,17 @@ def _handle_cron_update(handler, body):
                 updates[k] = v
     except ValueError as e:
         return bad(handler, str(e))
-    job = update_job(body["job_id"], updates)
+    # #7352: ``update_job`` re-parses the updated schedule through
+    # ``cron.jobs.parse_schedule``, which raises ``ValueError`` for
+    # display-form input like ``"once at 2026-08-28 16:05"`` (or any other
+    # user-typed garbage). That exception previously escaped to a 500
+    # because the earlier normalization try block didn't cover it. Return
+    # 400 with the parser message so the WebUI can surface a real
+    # validation error instead of an opaque Internal Server Error.
+    try:
+        job = update_job(body["job_id"], updates)
+    except ValueError as e:
+        return bad(handler, str(e), 400)
     if not job:
         return bad(handler, "Job not found", 404)
     return j(handler, {"ok": True, "job": _cron_job_for_api(job)})
