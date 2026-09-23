@@ -3,7 +3,142 @@
 
 ## [Unreleased]
 
+### Performance
+
+- **Opening a session while its task is still running is much faster.** Rebuilding the live
+  snapshot from the run journal parsed the journal twice, walked every metering row and grew the
+  reasoning text with repeated string concatenation, which is quadratic on long runs. The journal
+  is now parsed once, metering rows are skipped (their timestamp watermark is kept) and reasoning
+  deltas are joined once per segment. On a 15 MB / 22.7k-event journal the author measured the
+  rebuild going from 4.34 s to 0.49 s with a byte-identical snapshot. The interim-echo check now matches a
+  compact-equivalent suffix without a fixed window, so an echo stretched by interior whitespace is
+  no longer shown twice. (#7310, #7569 by @happy5318)
+
 ### Fixed
+
+- **Opening the sidebar can no longer stall the agent's writes to `state.db`.** Several WebUI
+  paths that only read the agent's `state.db` could quietly become writers. The read-only opener
+  fell back to a writable connection when `mode=ro` failed. The session listing self-healed a
+  missing `idx_messages_session` with `CREATE INDEX` through its own writable connection, which
+  holds the SQLite writer lock for minutes on a large `messages` table. The cron sidebar, insights
+  and deep-health checks opened the database with a bare `sqlite3.connect()`. Every one of these
+  readers now opens strictly read-only (`file:...?mode=ro`) and never creates an index. A missing
+  index falls back to the existing pre-aggregated listing. The gateway watcher also no longer polls
+  the database when no client is subscribed. Operators with an older agent can create the read
+  indexes in a drained maintenance window with `scripts/ensure_state_db_read_indexes.py`; see
+  `docs/troubleshooting.md`. (#7445 by @ruizanthony)
+
+- **A failed chat launch no longer leaves the session stuck "running".** If the worker thread
+  couldn't start, its stream ownership and the session's pending-stream fields were never cleared,
+  so the session could look permanently active and the registries grew. Launch failure now clears
+  exactly that stream's records, after releasing the chat-start lock, and never evicts a successor
+  stream. (#6869, #6937 by @jbdrak)
+- **A compressed conversation no longer shows up twice in the sidebar.** When context
+  compression started the continuation a few milliseconds before the parent was marked ended, the
+  continuation wasn't recognised. The sidebar then showed a duplicate same-title row plus a
+  spurious child-session entry, and opening the conversation didn't stitch the transcript. Both the
+  sidebar and the transcript stitcher now accept a bounded (2 s) early start when every other
+  lineage signal agrees: same source, direct parent link, a compression (or `cli_close`) end reason and not a fork.
+  (#6931, #7021 by @webtecnica)
+- **The profile switcher no longer 500s in a two-container Docker setup.** With the agent
+  source not mounted (`HERMES_WEBUI_CHAT_BACKEND=gateway`), `GET /api/profiles` fell through to
+  a skills-stats fallback that imported `agent.skill_utils` unguarded, so the missing module
+  surfaced as an error on every profile-list load. The import is now guarded and the skill
+  stats report as unknown in that case, so the picker stays usable (the skills line is simply
+  omitted). Thanks @webtecnica. (#7305, #7312)
+
+- **A title that mixes Chinese, Japanese or Korean with English terms is no longer rejected.**
+  The cross-script guard that stops a generated title from drifting into the wrong language
+  treated the borrowed Latin words in a CJK title as drift, so a valid title like
+  `WeChat Pay 回调失败排查` or `Python 代码修复` was thrown away and the session kept its
+  fallback title. Latin terms are now accepted when the title also contains CJK text, while
+  an all-Latin title for a CJK conversation is still rejected. Thanks @MuhammadUsamaMX.
+  (#7693, #7727)
+
+- **A late-arriving prompt no longer renders below the reply it asked for.** When a message
+  reached the transcript from `state.db` after the sidecar had already been merged⟪HERMES-CONTEXT-COMPRESSION: 809 of 1,009 chars omitted here by Hermes's context compressor. This is NOT part of the original tool call and must never be reproduced in new output — always write full, untruncated content.⟫- **A rejected request no longer poisons the next one on the same connection.** `server.py`
+  is a raw HTTP/1.1 handler where `rfile` is the socket itself, so answering a request
+  before reading its body left those bytes queued. The next request on a keep-alive
+  connection was then parsed starting mid-body, and the client got
+  `400 Bad request syntax ('{"a": "b"}GET /api/health HTTP/1.1')` — an error naming a
+  request it never sent, which is expensive to diagnose from the client side. Every
+  reject path now arms `Connection: close` when a body is still pending, and framing is
+  validated strictly (RFC 9110 `1*DIGIT`, duplicate and comma-combined `Content-Length`
+  reconciled, every `Transfer-Encoding` refused since nothing here decodes one). A
+  genuinely bodyless rejection keeps its keep-alive, so healthy pooled connections are
+  not dropped. Thanks @rodrigogs. (#7550, #6658)
+
+- **Opening a session that belongs to another profile now offers to switch to it instead of
+  looking deleted.** Several cross-profile guards answered `404 Session not found`, which the
+  front-end treats as a missing session and self-heals by clearing the URL and local storage —
+  so a valid deep link into another profile's session destroyed its own way back. Those guards
+  now return the same `409 session_profile_mismatch` the detail-load endpoint has used since
+  #5419, while a genuinely missing session still 404s and still self-heals. The clarify card,
+  compression-recovery card and manual-compression flow were each treating *every* `409` as
+  their own "stale" signal and are now scoped so a cross-profile refusal no longer hides a live
+  prompt or reports a false compression failure. Thanks @happy5318. (#7710, #7714)
+
+- **An OIDC-only or passkey-only deployment no longer shows a dead password prompt.** The
+  `/login` page rendered the password input, submit button and passkey control
+  unconditionally, so an instance with native OIDC configured and no
+  `HERMES_WEBUI_PASSWORD` displayed a password form that silently 401'd every submit. The
+  controls are now gated on the auth methods actually configured, with the passkey button
+  kept for passwordless-passkey instances where it is the only login affordance. Thanks
+  @happy5318. (#7056, #7715)
+
+- **A model whose native id contains a slash no longer poisons its configured-model badge.**
+  The badge builder synthesised a `{provider}/{model}` alias alongside the bare id, so a
+  model already carrying a slash (for example `commandcode` + `deepseek/deepseek-v4-flash`)
+  produced `commandcode/deepseek/deepseek-v4-flash` — a non-functional id that leaked into
+  the badge map, persisted into session state and returned `HTTP 400` from the agent. Only
+  the bare id and the `@provider:model` form are emitted now. Thanks @happy5318. (#7290, #7709)
+
+- **A conversation whose history carries an explicit `null` tool-call list no longer breaks
+  the tool-call summary.** `_extract_tool_calls_from_messages` used `.get('tool_calls', [])`,
+  which returns the default only when the key is *absent* — when a stored message carried the
+  key with a `null` value, the code tried to iterate `None` and raised `TypeError`. Reading
+  such a session now skips the empty entry and still summarises the tool calls that follow it.
+  Thanks @KayZz69. (#7265)
+
+- **The opencode-go provider lists its real models again instead of a frozen snapshot.** Model
+  discovery had fallen back to a hard-coded catalog, so models added or removed upstream never
+  appeared. The provider now queries live, with the lookup scoped to opencode-go alone: a slow
+  or unreachable endpoint falls back to the static catalog rather than blocking the picker for
+  anyone else, older Agent builds that lack the discovery API keep the previous behaviour, and a
+  configured model allowlist still wins over whatever discovery returns. Thanks
+  @shameez-struggles-to-commit. (#7220)
+
+- **Denying a gateway approval now retires the request instead of leaving the run waiting.**
+  When an approval routed through the gateway was denied, the deny reached the agent but the
+  local producer was never retired, so the run could sit waiting on a decision that had already
+  been made. Denial now settles the producer atomically, scoped to the exact
+  `(session_id, run_id, approval_id)` that was answered — sibling approvals from the same run
+  and approvals from other runs are left untouched — and repeated or late responses are bounded
+  no-ops rather than resurrecting a settled request. Thanks @snoyberg. (#7570)
+
+- **The approval card's "Skip all this session" button no longer shows two lightning bolts.**
+  The button rendered its ⚡ twice — once from the icon span in the markup and again from the
+  translated label, which carried its own leading glyph in 14 of 15 locales. The icon now comes
+  only from the markup, matching every sibling button on the card (Allow once / Allow session /
+  Always allow / Deny all pair an icon element with a glyph-free label), and translators no
+  longer carry the symbol in their strings. (#7701)
+
+- **The gateway watcher no longer polls `state.db` around the clock with nobody listening.**
+  Its poll loop re-fingerprinted the gateway state database every few seconds whether or not
+  any SSE client was attached, and slept in 0.1s increments — roughly 10 wakeups a second, all
+  day, on an idle server. The loop now parks on an event when there are no subscribers and is
+  woken by the first one, so an idle instance does no polling work at all; while subscribed it
+  waits on a single timer that still returns immediately on shutdown. Connecting a client
+  remains prompt — the first subscriber unparks the loop rather than waiting out the poll
+  interval. Thanks @DevNexsler. (#7694)
+
+- **A long-running turn no longer replays a stale token count after a reload.** The run-journal
+  recorded live metering frames, so reattaching to a stream — or reloading a tab mid-turn —
+  could replay a snapshot from earlier in the same run and briefly show token/TPS figures that
+  had already been superseded. Metering is now live-only and never journaled, and replayed
+  frames no longer carry an event id that could advance the client's resume cursor past real
+  content. Reattach and reload now show the current numbers for the turn in progress. Thanks
+  @laitekin. (#7291)
 
 - **Steering a conversation works again after the context is compressed.** When compression
   rotated `agent.session_id`, a steer could no longer find the active worker: it was either
