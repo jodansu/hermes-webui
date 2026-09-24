@@ -2089,6 +2089,7 @@ function closeLiveStream(sessionId, streamId, source){
   if(!live) return;
   if(streamId&&live.streamId!==streamId) return;
   if(source&&live.source!==source) return;
+  if(typeof live.cancelIdleRecovery==='function') live.cancelIdleRecovery();
   // Snapshot the current live-turn DOM BEFORE tearing the stream down. The
   // per-event snapshot (snapshotLiveTurn) only fires on content/tool_complete
   // SSE events, so switching away during a quiet window (mid tool-exec, silent
@@ -2759,11 +2760,18 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _currentActivityBurstId=Number((INFLIGHT[activeSid]&&INFLIGHT[activeSid].currentActivityBurstId)||0)||0;
   let _currentLiveSegmentSeq=Number((INFLIGHT[activeSid]&&INFLIGHT[activeSid].currentLiveSegmentSeq)||0)||0;
   let _assistantSegmentSeq=Number((INFLIGHT[activeSid]&&INFLIGHT[activeSid].currentLiveSegmentSeq)||0)||0;
-  let _lastRunJournalSeq=reconnecting
-    ? Number((INFLIGHT[activeSid]&&INFLIGHT[activeSid].lastRunJournalSeq)||0)
+  // #7640: the replay floor is only as trustworthy as the recovery state behind
+  // it. A cache that kept the cursor but lost the live assistant projection must
+  // not raise `after_seq`: the server would then replay only the tail (often just
+  // `stream_end`), and the missing journal range never gets a chance to rebuild
+  // the body — the settled footer paints over a blank message until a reload.
+  // Fall back to the zero floor whenever the state cannot be validated.
+  const _replayCursorInflight=reconnecting?INFLIGHT[activeSid]:null;
+  let _lastRunJournalSeq=(typeof _runJournalReplayFloorForInflight==='function')
+    ? _runJournalReplayFloorForInflight(_replayCursorInflight)
     : 0;
-  let _lastRunJournalEventId=reconnecting
-    ? String((INFLIGHT[activeSid]&&INFLIGHT[activeSid].lastRunJournalEventId)||'')
+  let _lastRunJournalEventId=(typeof _runJournalReplayEventIdForInflight==='function')
+    ? _runJournalReplayEventIdForInflight(_replayCursorInflight)
     : '';
   const _STREAM_FADE_MS=620;
   const _STREAM_FADE_MAX_MS=900;
@@ -4845,7 +4853,12 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   function _smdMediaTailFlushEntry(entry){
     const chunk=_smdMediaTailEntryChunk(entry);
     if(!chunk) return;
-    const m=/^MEDIA:([^\s\)\]]+)$/.exec(String(chunk));
+    // #7680 re-gate (9/22): strip backtick wrappers so the bare-token
+    // match below sees a plain ``MEDIA:path`` and the bare class
+    // (no backtick in the exclusion set) captures the full filename
+    // even when the path itself contains a backtick.
+    const normalized = String(chunk).replace(/`MEDIA:([^`\s]+)`/g, 'MEDIA:$1');
+    const m=/^MEDIA:([^\s\)\]]+)$/.exec(normalized);
     const emitted=!!(m && entry && entry.parent && _smdAppendMediaNode(entry.parent, m[1]));
     if(!emitted && entry) _smdMediaWriteText(entry.parent, entry.data, entry.baseAddText, entry.writeText, chunk);
   }
@@ -4893,23 +4906,29 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // Prose runs go through the owning text writer. MEDIA tokens go through
     // the single-token DOMParser helper only after a delimiter or
     // reliable filename suffix proves the ref is complete.
+    // #7680 re-gate (9/22): strip backtick wrappers first so the bare
+    // class (no backtick in the exclusion set) captures the full
+    // filename even when the path itself contains a backtick.
+    // The pre-pass replaces `` `MEDIA:path` `` with ``MEDIA:path``
+    // so the wrapped form is consumed before the bare scan.
+    const normalized = combined.replace(/`MEDIA:([^`\s]+)`/g, 'MEDIA:$1');
     const re=/MEDIA:([^\s\)\]]+)/g;
     let last=0, m;
     let unmatchedTail=null;
-    while((m=re.exec(combined))){
+    while((m=re.exec(normalized))){
       const matchEnd = m.index + m[0].length;
       if(m.index>last){
-        const slice = combined.slice(last, m.index);
+        const slice = normalized.slice(last, m.index);
         writeCurrent(slice);
       }
-      if(matchEnd===combined.length && !_smdMediaRefHasReliableBoundary(m[1])){
-        const candidate = combined.slice(m.index);
+      if(matchEnd===normalized.length && !_smdMediaRefHasReliableBoundary(m[1])){
+        const candidate = normalized.slice(m.index);
         if(candidate.length < _MEDIA_TAIL_MAX){
           unmatchedTail = candidate;
         } else {
           writeCurrent(candidate);
         }
-        last = combined.length;
+        last = normalized.length;
         break;
       }
       if(!_smdAppendMediaNode(parent, m[1])) writeCurrent(m[0]);
@@ -4917,7 +4936,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     }
     // Tail buffer — hold trailing bytes that look like an unterminated
     // MEDIA prefix; flush any prose before the partial MEDIA suffix.
-    const rest = combined.slice(last);
+    const rest = normalized.slice(last);
     if(rest){
       const tailMatch = /MEDIA:[^\s\)\]]*$/.exec(rest);
       const prefixTail = tailMatch ? '' : _smdMediaPrefixTail(rest);
@@ -5745,12 +5764,82 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     return true;
   }
 
+  function _bindSidebarIdleRecovery(live){
+    let pending=null;
+    live.cancelIdleRecovery=()=>{
+      if(pending&&pending.timer) clearTimeout(pending.timer);
+      pending=null;
+    };
+    live.recoverFromSidebarIdle=()=>{
+      if(pending||_streamFinalized||_terminalStateReached||_pendingStreamEndRecovery) return;
+      const request={inflight:INFLIGHT[activeSid],timer:null};
+      const isCurrent=()=>pending===request&&!_streamFinalized&&!_terminalStateReached&&
+        LIVE_STREAMS[activeSid]===live&&live.source.readyState===1&&
+        S.session&&S.session.session_id===activeSid&&S.activeStreamId===streamId&&
+        INFLIGHT[activeSid]===request.inflight&&
+        !(typeof _sendInProgress!=='undefined'&&_sendInProgress&&activeSid===_sendInProgressSid);
+      pending=request;
+      // Give the independently delivered terminal frame a short handoff window,
+      // then use canonical session recovery even if the transport stays OPEN.
+      // One ticket spans both timer and request; list refreshes cannot extend it.
+      request.timer=setTimeout(async()=>{
+        request.timer=null;
+        if(!isCurrent()){
+          if(pending===request) live.cancelIdleRecovery();
+          return;
+        }
+        try{
+          let runtimeStatus=null;
+          try{
+            runtimeStatus=await api(
+              `/api/chat/stream/status?stream_id=${encodeURIComponent(streamId)}`,
+              {timeoutMs:8000,retries:0,timeoutToast:false}
+            );
+          }catch(_){
+            // Runtime ownership is authoritative here.  If the probe itself
+            // fails, do not infer completion from already-cleared session
+            // fields; surface the existing interrupted-stream path instead.
+            if(isCurrent()) _handleStreamError(live.source);
+            return;
+          }
+          if(!isCurrent()) return;
+          if(!runtimeStatus||typeof runtimeStatus.active!=='boolean'){
+            _handleStreamError(live.source);
+            return;
+          }
+          // Gateway success writeback clears persisted active/pending fields
+          // before post-turn goal evaluation and terminal event emission.
+          // STREAMS-backed status therefore owns this decision: an exact active
+          // runtime must keep its OPEN browser handoff even if the sidebar row
+          // already looks idle.
+          if(runtimeStatus.active) return;
+          const status=await _restoreSettledSession(live.source,{
+            status:true,
+            isCurrent,
+            requestOptions:{timeoutMs:8000,retries:0,timeoutToast:false},
+            preserveVisibleOnShorterTerminalSnapshot:true,
+          });
+          // A stale sidebar response is not permission to terminate a worker
+          // which the authoritative session snapshot still reports as active.
+          if(isCurrent()&&status!=='restored'&&status!=='active') _handleStreamError(live.source);
+        }finally{
+          if(pending===request) live.cancelIdleRecovery();
+        }
+      },1500);
+    };
+    for(const event of ['done','cancel','apperror','stream_end','error']){
+      live.source.addEventListener(event,live.cancelIdleRecovery);
+    }
+  }
+
   function _wireSSE(source){
     const existingLive=LIVE_STREAMS[activeSid];
     if(existingLive&&existingLive.source&&existingLive.source!==source){
+      if(typeof existingLive.cancelIdleRecovery==='function') existingLive.cancelIdleRecovery();
       try{if(existingLive.source.readyState!==2)existingLive.source.close();}catch(_){ }
     }
     LIVE_STREAMS[activeSid]={streamId,source};
+    _bindSidebarIdleRecovery(LIVE_STREAMS[activeSid]);
 
     // Note on #631 Bug B: the original PR description stated the server
     // "replays buffered token events" on reconnect, and proposed resetting
@@ -7024,13 +7113,16 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
 
   async function _restoreSettledSession(source, options=null){
     const returnStatus=!!(options&&options.status);
+    const isCurrent=options&&typeof options.isCurrent==='function'?options.isCurrent:null;
+    if(isCurrent&&!isCurrent()) return returnStatus?'stale':false;
     const preserveVisibleOnShorterTerminalSnapshot=!!(options&&options.preserveVisibleOnShorterTerminalSnapshot);
     if(_isActiveSession() && S.activeStreamId!==streamId){
       _closeSource(source);
       return returnStatus?'stale':false;
     }
     try{
-      const data=await api(`/api/session?session_id=${encodeURIComponent(activeSid)}`);
+      const data=await api(`/api/session?session_id=${encodeURIComponent(activeSid)}`,options&&options.requestOptions||{});
+      if(isCurrent&&!isCurrent()) return returnStatus?'stale':false;
       // Opus #2852 race-fix: if a late `done` event ran the finalize path while
       // we were awaiting the network roundtrip, bail out — done already settled.
       if(_streamFinalized) return returnStatus?'restored':true;
@@ -8128,7 +8220,22 @@ function _startHiddenActiveStreamPoll(sid) {
     if (S.activeStreamId) return; // already rendering; wait it out
     try {
       fetch(_apiUrl('api/session/status?session_id=' + encodeURIComponent(sid)), {credentials: 'same-origin'})
-        .then(r => r.ok ? r.json() : null)
+        .then(r => {
+          // #7299: 404 Not Found / 410 Gone are TERMINAL for this
+          // session-owned poll. The session has been deleted or no
+          // longer exists in the active state directory, so further
+          // polls are guaranteed to fail. Stop the poll immediately
+          // to avoid the infinite 404 loop on stale background tabs
+          // (one tab could fire ~10 such requests per minute; multiple
+          // tabs multiply the noise). Transient failures (5xx, rate
+          // limit, network error) keep polling — only the missing
+          // session itself is terminal.
+          if ((r.status === 404 || r.status === 410) && _sessionStreamHiddenPollSid === sid) {
+            _stopHiddenActiveStreamPoll();
+            return null;
+          }
+          return r.ok ? r.json() : null;
+        })
         .then(d => {
           if (!d || _sessionStreamHiddenPollSid !== sid) return;
           const streamId = d.active_stream_id;

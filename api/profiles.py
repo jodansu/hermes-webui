@@ -198,7 +198,19 @@ def _unwrap_profile_home_to_base(home: Path) -> Path:
 # are operator/deployment-level postures, not per-profile toggles. Letting a
 # profile .env set HERMES_WEBUI_ISOLATED_PROFILE=0 would let a contained user
 # escape isolation (#4589).
-_PROTECTED_ENV_KEYS = frozenset({'HERMES_WEBUI_ISOLATED_PROFILE'})
+_PROTECTED_ENV_KEYS = frozenset({
+    'HERMES_WEBUI_ISOLATED_PROFILE',
+    # Server-wide sidebar window; a profile .env must not widen the per-request query.
+    'HERMES_WEBUI_VISIBLE_SESSION_LIMIT',
+    # #7656 round-3: HERMES_WEBUI_MAX_SESSION_RESOLVE is a process-wide resource
+    # cap (controls the BoundedSemaphore that gates full-transcript resolves).
+    # A profile's .env is per-profile by design; allowing it to set a
+    # server-wide limit (and a first-load-wins asymmetry) would let a
+    # single profile drag the rest into a tighter or looser posture than
+    # the operator intended. Same shape as the isolated-profile key: only
+    # the operator/launcher env at startup can set it.
+    'HERMES_WEBUI_MAX_SESSION_RESOLVE',
+})
 
 
 def _isolated_profile_opt_in() -> bool:
@@ -934,6 +946,13 @@ _BLOCKED_RUNTIME_ENV_KEYS = {
     # #4589: operator/deployment isolation posture — never overridable by a
     # profile's own env on any runtime/gateway-parity path.
     'HERMES_WEBUI_ISOLATED_PROFILE',
+    'HERMES_WEBUI_VISIBLE_SESSION_LIMIT',
+    # #7656 round-3: process-wide resolve cap. Filter out a profile's
+    # .env override the same way we filter the isolated-profile key, so
+    # the cap stays at the operator/launcher value across profile
+    # switches rather than re-sizing to whatever the first-loaded
+    # profile env set.
+    'HERMES_WEBUI_MAX_SESSION_RESOLVE',
 }
 
 

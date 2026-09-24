@@ -3,6 +3,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Full-session resolve concurrency is configurable.** `HERMES_WEBUI_MAX_SESSION_RESOLVE` sets how
+  many full-transcript session resolves may run at once (default 2, a positive integer up to 64;
+  zero, negative, non-numeric or out-of-range values fall back to 2). It is process-wide, so a
+  profile's `.env` cannot override it. (#7421, #7656 by @happy5318)
+- **The sidebar's recent-session window is configurable.** `HERMES_WEBUI_VISIBLE_SESSION_LIMIT` sets
+  how many recent sessions the sidebar lists (default 20). It also bounds how many delegated subagent
+  children can nest at once, so raise it for wide fan-outs. Invalid or non-positive values fall back to
+  20, values above 200 are clamped, and it is resolved before profile init so a profile `.env` cannot
+  override it. (#7631 by @carlotestor)
+
 ### Performance
 
 - **Opening a session while its task is still running is much faster.** Rebuilding the live
@@ -16,6 +28,126 @@
 
 ### Fixed
 
+- **Delegated subagent sessions show inside their parent's project.** With a project selected in the
+  sidebar, subagent sessions disappeared because `state.db` never gives them a `project_id`. Only
+  subagent rows now inherit their parent's project, resolved once per lineage, so forks keep their
+  own "No project" assignment and deep lineages stay fast. (#7765 by @carlotestor)
+- **Saving a cron job with the model picker at "Default" keeps its provider-only pin.** Editing a job
+  pinned to a provider with no model (the usual shape for a self-hosted OpenAI-compatible router)
+  sent `provider: null` and wiped the pin. The editor now preserves a provider-only pin when the
+  model picker is left at Default. (#7779 by @cushingw)
+- **A consumed mid-turn `/steer` no longer leaves its out-of-band wrapper in the settled chat (#7600).**
+  A `/steer` reaches the agent as an `[OUT-OF-BAND USER MESSAGE …]` block appended to the turn's
+  last tool result. After the turn settled, that wrapper stayed visible in the chat transcript. The
+  settled-transcript writeback now scrubs the consumed wrapper from the rows it is built from.
+  (#7610 by @webtecnica)
+- **Saving a very large session no longer reads and parses the whole file just to count messages.**
+  The #1558 backup safeguard in `Session.save()` needs the on-disk message count; it obtained it by
+  loading the entire sidecar. On a real 203 MB / 266,940-message session that made every save
+  expensive. The count is now taken without a full parse, and the shrink-backup behaviour is
+  unchanged. (#7578 by @rodrigogs)
+- **A cancelled or recovered turn no longer duplicates an answer that was already saved (#6366).**
+  When a completed assistant turn had been persisted and a later cancel/recovery path ran for the
+  same pending turn, recovery could append a duplicate user turn plus a `_partial` clone of the
+  journal. Recovery now stops once the transcript has already advanced past the pending turn.
+  (#7682 by @happy5318)
+
+- **The live stream reports which model actually served the turn.** A new additive `runtime_model`
+  SSE event carries the model (and provider, when known) that the Agent reported while producing
+  output, separately from the model that was requested. It is journaled for replay, is exposed as
+  `runtime_journal_snapshot.runtime_model`, never falls back to the configured selection when
+  unknown, and never changes the model requested for the next turn. Existing clients ignore it.
+  (#7767 by @ruizanthony)
+- **Reconnecting to a new turn no longer resumes from the previous turn's replay cursor.** A new
+  turn copies the full transcript into the in-flight state, so the previous turn's assistant reply
+  could seed the replay floor and the reattached stream skipped the current reply's early events.
+  Replay now seeds only from the current live assistant row, and falls back to a full replay that
+  rebuilds the assistant body when a cursor outlives its live state. (#7651 by @happy5318)
+- **Context-length lookup keeps the configured base URL for ownerless and underscore-named
+  providers.** The #7535 ownership guard also dropped the global `model.base_url` for a `model:`
+  section with a `base_url` but no `provider`, and for provider IDs written with an underscore
+  (`opencode_go` vs `opencode-go`), so those sessions could resolve the wrong context window. Both
+  now keep the URL, while a different declared owner still does not leak its endpoint.
+  (#7743 by @webtecnica)
+- **A session deleted during a restart no longer produces a spurious recovery warning.** When
+  WebUI startup recovery re-attached background processes, a session that had vanished between
+  enumeration and rebind raised a `KeyError` that was logged as a warning. It now follows the
+  existing skip path, confined to the session lookup, so the vanished owner is skipped, live owners
+  still rebind, and registry errors still warn. (#7753, #7774 by @happy5318)
+
+- **Waiting on the Agent's session lease is shown as a warning instead of looking stuck.** When
+  another Hermes process (gateway, CLI or cron) holds the session's turn lease, the Agent's
+  "another Hermes process is using this session" notices now reach the chat as a warning status
+  instead of being dropped, and the status clears when the run ends. Classification keys on the Agent
+  status kind (`lifecycle` / `warn`), so user-authored text can never be promoted to a warning.
+  (#7760 by @ruizanthony)
+- **A stale in-flight projection can no longer reach a gateway watcher after its last subscriber
+  leaves.** Final unsubscribe and queue eviction now invalidate the cache and fence projections that
+  were already in flight, without holding the lock across database reads or SSE writes, so a client
+  that re-subscribes gets a fresh snapshot instead of a stale one. (#7761 by @ruizanthony)
+- **A burst of "session busy" refusals no longer drops a background-task completion.** When
+  `start_session_turn()` refused a completion wake-up with a transient 409 (Agent runtime stale,
+  process wake-ups paused, or the session busy with another turn), the bridge released the durable
+  claim as a plain failure, so a few refusals in a row could terminally drop a completion whose
+  session was alive and waiting. Transient refusals now return the claim as retryable, while hard
+  failures still use up the attempt budget. (#7758 by @ruizanthony)
+- **A first visit now uses the browser's language.** The server stores "no preference" as `null`
+  instead of defaulting to `"en"`, so a first-time visitor gets `navigator.language` while an
+  explicitly saved language (including English) still wins, and legacy `settings.json` files that
+  already hold `"en"` keep English. Reading the browser language is guarded, so an environment where
+  `navigator` throws falls back cleanly. (#7622, #7730 by @happy5318)
+- **The live model list for a custom provider respects its `models:` allowlist, without treating
+  per-model metadata as one.** `/api/models/live` filters a custom provider's live catalog to its
+  configured `models:` when that is a list, or when it is a mapping with `discover_models: false`.
+  A mapping of per-model settings (the shape `hermes setup` writes) keeps the full live catalog, as
+  the Agent does. (#7165 by @happy5318)
+- **`MEDIA:` links wrapped in inline code no longer 404.** Every `MEDIA:` capture site (renderer,
+  streaming parser, TTS stripper, session-media authorization and snapshot capture, seven in all)
+  swallowed the closing backtick of `` `MEDIA:/path` `` into the path, so the file lookup and the
+  session allowlist both missed. Backtick-wrapped refs are now normalized first, while bare paths that
+  genuinely contain a backtick keep their full name. (#7359, #7708 by @happy5318)
+- **A turn's Worklog no longer vanishes when the sidebar reports idle before the final frame.**
+  `/api/sessions` could say a session was idle before the chat stream's terminal frame reached the
+  page, and three sidebar paths (idle reconciliation, the INFLIGHT purge and optimistic-row
+  retirement) then erased the pane's Worklog and stream id, so the late `done` was rejected as stale
+  and the settled scene was never saved. The cleanup now waits briefly for the pane's own open
+  stream, then checks `/api/chat/stream/status` once, and falls back to the existing
+  interrupted-stream recovery if that check fails. (#7749 by @franksong2702)
+- **A session's run journal can no longer be written out of order.** The journal writer reserved a
+  sequence number under the per-path lock, released it, and then appended, so two concurrent writers
+  could land sequence N+1 on disk before N and the replay reader would stop at the gap
+  (`replay_noncontiguous`). Sequence allocation and the physical append now happen under the same
+  existing lock. (#7751 by @franksong2702)
+- **A stopped chat can no longer publish or reuse its agent after Stop.** A worker that was
+  cancelled could still publish its cached Agent or invoke it after Stop landed, and its late
+  cleanup could close or evict the same Agent object a successor turn had just picked up. The initial
+  path and both credential self-heal paths now take one Stop admission, the cancellation event, live
+  stream and exact Agent are rechecked immediately before invocation (no registry lock is held across
+  provider or tool execution), and cache/lifecycle handles are retired only while the surviving owner
+  still matches. (#7748 by @franksong2702)
+- **Reconnecting to a running session no longer redraws every tool card over and over.** After a
+  reconnect restored the live activity scene from the run journal, the client also replayed its older
+  cached in-flight tool list on top, so a turn with N tool cards redrew them N times. When the
+  journal-backed scene restores successfully the replay is now skipped (newer rows still arrive
+  through the reattached stream); the replay stays for legacy restores and for a failed or
+  unavailable scene. (#7436, @atchisonbrent)
+
+- **A settled assistant answer is no longer shown twice (#2051).** Two client-side paths could put a
+  second copy of a finished answer on screen after a turn settled: a stale live-turn node that was
+  still treated as live, and a settled rebuild branch that appended a turn instead of replacing it.
+  The same fix stops an interrupted turn's notice from appearing twice, and stops the composer's
+  model picker from listing one configured custom-provider model twice. The stored transcript was
+  always correct; only the rendering duplicated it. (#7374, @Thireus)
+
+- **A hidden browser tab stops polling a session that was deleted.** When a tab is in the
+  background, its stream poll kept asking for a session every few seconds after it was deleted or
+  archived away, forever. A `404`/`410` for the polled session now stops that poll; `503` and network
+  errors keep retrying, a late `404` for one session cannot stop another session's poll, and making
+  the tab visible again reopens the live stream. (#7299, #7716 by @happy5318)
+- **The OpenRouter setup no longer offers a model OpenRouter doesn't serve.** Onboarding offered
+  `z-ai/glm-4.5-flash`, which is not in OpenRouter's catalog, so picking it failed on the first
+  message. That slot now offers `z-ai/glm-4.5-air`, Z.AI's nearest light model. The direct Z.AI
+  setup still offers GLM-4.5 Flash. (#7520, #7734 by @MuhammadUsamaMX)
 - **Opening the sidebar can no longer stall the agent's writes to `state.db`.** Several WebUI
   paths that only read the agent's `state.db` could quietly become writers. The read-only opener
   fell back to a writable connection when `mode=ro` failed. The session listing self-healed a
@@ -203,6 +335,7 @@
 
 ### Changed
 
+- **Two flaky tests are stable again.** Three `get_available_models()` cache-metadata tests raced the 4-second live-rebuild budget on a loaded CI host and could time out onto the stale-cache path. They now pin the budget to `0`, which is the documented setting for the legacy unbounded synchronous rebuild, so they still exercise the real rebuild (#7735). A source-text oracle that string-matched `delete_cli_session`'s source to prove it opens a writable connection is removed. The behavioral test in `test_issue1494_state_db_fd_leak.py` still guards that contract: it fails with `attempt to write a readonly database` if the delete path is ever switched to a read-only connection (#7726). Test-only; no runtime change. Thanks @webtecnica. (#7744, #7742)
 - **The chat composer grows natively instead of being resized by JavaScript on every keystroke.** `autoResize()` measured `scrollHeight` and wrote `style.height` on each input event — a forced synchronous reflow on the most-typed-in surface in the app. Browsers that support CSS `field-sizing: content` (Chromium today; also Firefox 152 and Safari 26.2) now own the geometry directly, gated on `CSS.supports()`, and the existing JavaScript path is untouched for every other engine. Measured behaviour is identical across both paths: 44px resting height, no jump when the first character is typed or the last deleted, growth to the 200px ceiling, then internal scrolling. Because `field-sizing` deliberately includes placeholder text in content sizing, `:placeholder-shown` pins fixed sizing while the composer is empty so a long placeholder can't inflate it. Thanks @starship-s. (#6760, #5514)
 
 ### Fixed
