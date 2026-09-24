@@ -284,7 +284,7 @@ let currentPage = 1;
 
 async function init() {
   try {
-    const res = await fetch('articles.json');
+    const res = await fetch('http://192.168.40.5:8789/articles.json');
     const data = await res.json();
     allArticles = data.articles;
     document.getElementById('importTime').textContent = data.imported_at ? new Date(data.imported_at).toLocaleString('zh-CN') : '—';
@@ -396,7 +396,7 @@ function viewArticle(articleId) {
     `;
   }
   
-  fetch(`wechat-articles/${articleId}.md`)
+  fetch(`http://192.168.40.5:8789/wechat-articles/${articleId}.md`)
     .then(r => r.text())
     .then(md => {
       const { body, frontmatter } = parseMarkdown(md);
